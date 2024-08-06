@@ -475,12 +475,7 @@ def main():
     # Color stream variables
     color_msg_counter = 0
 
-    for topic, msg, t in input_bag.read_messages(raw=True):
-
-        msg_type, serialized_bytes, md5sum, msg_def, header = msg
-
-        deserialized_msg = String()
-        deserialized_msg.deserialize(serialized_bytes)
+    for topic, msg, t in input_bag.read_messages():
 
         if COLOR_DATA_TOPIC in topic:
             # Keep track of the current color message to print the progress of the process
