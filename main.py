@@ -13,11 +13,15 @@ import json
 import numpy as np
 import pandas as pd
 from std_msgs.msg import String
+from genpy import Time, Duration
+import io
 
 # TEMP
 recognizable_persons_col = '[{"type":"PATIENT","appearances":[{"start":{"frame":126682,"landmarks":{"left_eye":[272,1]}},"end":{"frame":126923}}]},{"type":"PATIENT","appearances":[{"start":{"frame":126913,"landmarks":{"right_eye":[1279,330]}},"end":{"frame":127070}}]}]'
+# recognizable_persons_col = None
 
 COLOR_DATA_TOPIC = "/device_0/sensor_1/Color_0/image/data"
+BAG_INITIALIZATION_TIME = Time(nsecs=1)
 
 # File types
 BAG_FILE_TYPE = ("BAG File", "*.bag")
@@ -373,6 +377,22 @@ def main():
     input_bag = rosbag.Bag(input_bag_path, "r")
     output_bag = rosbag.Bag(output_bag_path, "w")
 
+    # Get the bag topics
+    input_bag_info = input_bag.get_type_and_topic_info()
+    input_bag_topics = input_bag_info.topics
+    # Initialize an empty list to store the continuous topics
+    continuous_topics = []
+    # Iterate through each topic and its info
+    for topic, info in input_bag_topics.items():
+        # Check if the topic has a frequency different from None
+        if info.frequency is not None:
+            # Add the topic to the continuous topics list
+            continuous_topics.append(topic)
+            # Check for corresponding metadata topics and add them
+            metadata_topic = topic.replace('/data', '/metadata')
+            if metadata_topic in input_bag_topics:
+                continuous_topics.append(metadata_topic)
+
     # Get the frame info of the color stream
     first_frame_number, last_frame_number = None, None
     color_msg_count = 0
@@ -475,9 +495,10 @@ def main():
     # Color stream variables
     color_msg_counter = 0
 
-    for topic, msg, t in input_bag.read_messages():
+    for topic, msg, t in input_bag.read_messages(raw=True):
 
         if COLOR_DATA_TOPIC in topic:
+
             # Keep track of the current color message to print the progress of the process
             color_msg_counter += 1
             print(
@@ -486,15 +507,31 @@ def main():
                 flush=True,
             )
 
+            # Unpack the message tuple
+            msg_type, serialized_bytes, md5sum, pos, pytype = msg
+
+            # print(f"\nTimestamp: {t.secs}.{t.nsecs:09d}s, Topic: {topic}")
+            # print(f"datatype: {msg_type}")
+            # print(f"data: {serialized_bytes}")
+            # print(f"md5sum: {md5sum}")
+            # print(f"position: {pos}")
+            # print(f"pytype: {pytype}")
+
+            # Deserialize the message bytes
+            deserialized_image = Image()
+            deserialized_image.deserialize(serialized_bytes)
+
+            frame_number = deserialized_image.header.seq
+
             if recognizable_persons_col is not None:
                 # Update the current segment of the stream
-                if msg.header.seq > current_stream_segment["end_frame"]:
+                if frame_number > current_stream_segment["end_frame"]:
                     segment_index += 1
                     current_stream_segment = stream_segments[segment_index]
 
                 # Check if the current frame has a headcount change to update the persons
                 for headcount_change in headcount_changes:
-                    if msg.header.seq == headcount_change["frame"]:
+                    if frame_number == headcount_change["frame"]:
                         # Insert or remove the facial data of the person involved in the headcount change
                         update_persons(
                             current_persons=current_persons,
@@ -506,7 +543,7 @@ def main():
 
                     # Convert ROS Image message to OpenCV image
                     cv_image = bridge.imgmsg_to_cv2(
-                        img_msg=msg, desired_encoding="bgr8"
+                        img_msg=deserialized_image, desired_encoding="bgr8"
                     )
 
                     # Process the image using OpenCV
@@ -514,13 +551,26 @@ def main():
                         cv_image=cv_image,
                         current_segment=current_stream_segment,
                         current_persons=current_persons,
-                        frame_number=msg.header.seq,
+                        frame_number=frame_number,
                     )
 
                     # Convert OpenCV image back to ROS Image message
-                    msg = bridge.cv2_to_imgmsg(cvim=processed_cv_image, encoding="rgb8")
+                    processed_ros_image = bridge.cv2_to_imgmsg(cvim=processed_cv_image, encoding="rgb8")
 
-        output_bag.write(topic, msg, t)
+                    # Serialize the processed image message
+                    buffer = io.BytesIO()
+                    processed_ros_image.serialize(buffer)
+
+                    # Convert the original message tuple to a list
+                    msg_list = list(msg)
+
+                    # Replace the serialized_bytes in the list
+                    msg_list[1] = buffer.getvalue()
+
+                    # Convert the list back to a tuple
+                    msg = tuple(msg_list)
+
+        output_bag.write(topic=topic, msg=msg, t=t, raw=True)
 
     input_bag.close()
     output_bag.close()
