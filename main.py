@@ -12,13 +12,21 @@ import time
 import json
 import numpy as np
 import pandas as pd
-from std_msgs.msg import String
+from std_msgs.msg import String, Header
 from genpy import Time, Duration
 import io
 
 # TEMP
+# On frame wound visibility
+wound_visibility_full_col = '[{"start_frame":126762,"end_frame":126861}]'
+wound_visibility_partial_col = '[{"start_frame":126626,"end_frame":126750,"degree":2},{"start_frame":126751,"end_frame":126761,"degree":1},{"start_frame":126862,"end_frame":126866,"degree":1},{"start_frame":126867,"end_frame":127070,"degree":2}]'
+wound_visibility_none_col = None
+# Wound covered by something
+wound_covered_col = None
+# Wound overlaps a face
+wound_overlaps_col = '[{"start_frame":126960,"end_frame":127070}]'
+# Persons that can be recognized
 recognizable_persons_col = '[{"type":"PATIENT","appearances":[{"start":{"frame":126682,"landmarks":{"left_eye":[272,1]}},"end":{"frame":126923}}]},{"type":"PATIENT","appearances":[{"start":{"frame":126913,"landmarks":{"right_eye":[1279,330]}},"end":{"frame":127070}}]}]'
-# recognizable_persons_col = None
 
 COLOR_DATA_TOPIC = "/device_0/sensor_1/Color_0/image/data"
 BAG_INITIALIZATION_TIME = Time(nsecs=1)
@@ -42,7 +50,6 @@ PARTIALLY_OUT_TOLERANCE = 1  # 1: LIGHTLY, 2: MODERATELY, 3: HEAVILY
 
 
 def get_file_path(file_type: Tuple[str, str]) -> str:
-
     main_window = tkinter.Tk()
     # main_window.title("TFG")
     main_window.withdraw()  # Hide the main window
@@ -97,12 +104,11 @@ def calculate_iou(box1: List[int], box2: List[int]) -> float:
 
 
 def process_cv_image(
-    cv_image: np.ndarray,
-    current_segment: dict,
-    current_persons: List[dict],
-    frame_number,
+        cv_image: np.ndarray,
+        current_segment: dict,
+        current_persons: List[dict],
+        frame_number,
 ) -> np.ndarray:
-
     image_height, image_width = cv_image.shape[:2]
 
     # Detect faces using RetinaFace
@@ -368,7 +374,7 @@ def main():
 
     # Create the new filename with '_EDITED' appended before the extension
     output_bag_name = (
-        input_bag_path.stem + "_EDIT_" + current_timestamp + input_bag_path.suffix
+            input_bag_path.stem + "_EDIT_" + current_timestamp + input_bag_path.suffix
     )
 
     # Combine the new directory path and the new filename
@@ -518,10 +524,12 @@ def main():
             # print(f"pytype: {pytype}")
 
             # Deserialize the message bytes
-            deserialized_image = Image()
-            deserialized_image.deserialize(serialized_bytes)
+            deserialized_bytes = Image()
+            deserialized_bytes.deserialize(serialized_bytes)
 
-            frame_number = deserialized_image.header.seq
+            # Save the header values
+            frame_number = deserialized_bytes.header.seq
+            frame_timestamp = deserialized_bytes.header.stamp
 
             if recognizable_persons_col is not None:
                 # Update the current segment of the stream
@@ -540,10 +548,10 @@ def main():
 
                 # Only process the current message if persons appear in the stream segment
                 if len(current_stream_segment["headcount"]) != 0:
-
                     # Convert ROS Image message to OpenCV image
                     cv_image = bridge.imgmsg_to_cv2(
-                        img_msg=deserialized_image, desired_encoding="bgr8"
+                        img_msg=deserialized_bytes,
+                        desired_encoding="bgr8",
                     )
 
                     # Process the image using OpenCV
@@ -555,7 +563,15 @@ def main():
                     )
 
                     # Convert OpenCV image back to ROS Image message
-                    processed_ros_image = bridge.cv2_to_imgmsg(cvim=processed_cv_image, encoding="rgb8")
+                    processed_ros_image = bridge.cv2_to_imgmsg(
+                        cvim=processed_cv_image,
+                        encoding="rgb8",
+                    )
+
+                    # Restore the header values
+                    processed_ros_image.header.seq = frame_number
+                    processed_ros_image.header.stamp = frame_timestamp
+                    # Replacing the frame_id prevents newer SDK versions from playing the file, so we leave it empty
 
                     # Serialize the processed image message
                     buffer = io.BytesIO()
@@ -579,7 +595,7 @@ def main():
 
     end_time = time.time()
     duration = (end_time - start_time) / 60
-    print(f"Time: {format(round(duration,3))} minutes")
+    print(f"Time: {format(round(duration, 3))} minutes")
 
 
 if __name__ == "__main__":
