@@ -2,7 +2,7 @@ import tkinter
 from tkinter import filedialog
 from pathlib import Path
 from datetime import datetime
-from typing import Tuple, List, Dict
+from typing import Tuple, List
 from sensor_msgs.msg import Image
 import rosbag
 import cv2
@@ -11,24 +11,28 @@ from retinaface import RetinaFace
 import time
 import json
 import numpy as np
-import pandas as pd
-from std_msgs.msg import String, Header
-from genpy import Time, Duration
+from genpy import Time
 import io
 
-# TEMP
+# Temporary values. These will be extracted from an Excel file.
 # On frame wound visibility
-wound_visibility_full_col = '[{"start_frame":126762,"end_frame":126861}]'
-wound_visibility_partial_col = '[{"start_frame":126626,"end_frame":126750,"degree":2},{"start_frame":126751,"end_frame":126761,"degree":1},{"start_frame":126862,"end_frame":126866,"degree":1},{"start_frame":126867,"end_frame":127070,"degree":2}]'
-wound_visibility_none_col = None
-# Wound covered by something
-wound_covered_col = None
-# Wound overlaps a face
-wound_overlaps_col = '[{"start_frame":126960,"end_frame":127070}]'
-# Persons that can be recognized
-recognizable_persons_col = '[{"type":"PATIENT","appearances":[{"start":{"frame":126682,"landmarks":{"left_eye":[272,1]}},"end":{"frame":126923}}]},{"type":"PATIENT","appearances":[{"start":{"frame":126913,"landmarks":{"right_eye":[1279,330]}},"end":{"frame":127070}}]}]'
+WOUND_VISIBILITY_FULL_CELL = '[{"start_frame":96,"end_frame":183},{"start_frame":197,"end_frame":208},{"start_frame":223,"end_frame":300},{"start_frame":386,"end_frame":420},{"start_frame":438,"end_frame":442},{"start_frame":470,"end_frame":515},{"start_frame":535,"end_frame":545},{"start_frame":588,"end_frame":626},{"start_frame":637,"end_frame":742},{"start_frame":824,"end_frame":862},{"start_frame":887,"end_frame":941},{"start_frame":968,"end_frame":1028},{"start_frame":1134,"end_frame":1140}]'
+WOUND_VISIBILITY_PARTIAL_CELL = '[{"start_frame":185,"end_frame":188,"degree":1},{"start_frame":189,"end_frame":193,"degree":2},{"start_frame":194,"end_frame":196,"degree":1},{"start_frame":209,"end_frame":222,"degree":1},{"start_frame":301,"end_frame":303,"degree":1},{"start_frame":304,"end_frame":308,"degree":2},{"start_frame":309,"end_frame":320,"degree":3},{"start_frame":321,"end_frame":328,"degree":2},{"start_frame":329,"end_frame":334,"degree":1},{"start_frame":335,"end_frame":364,"degree":2},{"start_frame":365,"end_frame":380,"degree":3},{"start_frame":381,"end_frame":384,"degree":2},{"start_frame":385,"end_frame":385,"degree":1},{"start_frame":421,"end_frame":437,"degree":1},{"start_frame":443,"end_frame":452,"degree":1},{"start_frame":453,"end_frame":466,"degree":2},{"start_frame":467,"end_frame":469,"degree":1},{"start_frame":516,"end_frame":534,"degree":1},{"start_frame":546,"end_frame":567,"degree":1},{"start_frame":568,"end_frame":577,"degree":2},{"start_frame":578,"end_frame":587,"degree":1},{"start_frame":627,"end_frame":636,"degree":1},{"start_frame":743,"end_frame":762,"degree":1},{"start_frame":763,"end_frame":810,"degree":2},{"start_frame":811,"end_frame":823,"degree":1},{"start_frame":863,"end_frame":865,"degree":1},{"start_frame":866,"end_frame":871,"degree":2},{"start_frame":872,"end_frame":886,"degree":1},{"start_frame":942,"end_frame":967,"degree":1},{"start_frame":1029,"end_frame":1033,"degree":1},{"start_frame":1034,"end_frame":1046,"degree":2},{"start_frame":1047,"end_frame":1125,"degree":3},{"start_frame":1126,"end_frame":1129,"degree":2},{"start_frame":1130,"end_frame":1133,"degree":1}]'
+WOUND_VISIBILITY_NONE_CELL = (
+    '[{"start_frame":39,"end_frame":83},{"start_frame":1162,"end_frame":1196}]'
+)
+# Issues with the wound visibility
+WOUND_BLURRY_CELL = (
+    '[{"start_frame":84,"end_frame":94},{"start_frame":1141,"end_frame":1161}]'
+)
+WOUND_COVERED_CELL = (
+    '[{"start_frame":994,"end_frame":1036},{"start_frame":1156,"end_frame":1161}]'
+)
+WOUND_NEAR_FACE_CELL = '[{"start_frame":832,"end_frame":841}]'
+# Persons that can be recognized in the color frames
+RECOGNIZABLE_PERSONS_CELL = '[{"type":"STAFF","appearances":[{"start":{"frame":117,"landmarks":{"right_eye":[256,485],"nose":[234,483],"mouth_right":[240,457],"mouth_left":[215,470]}},"end":{"frame":226}}]},{"type":"PATIENT","appearances":[{"start":{"frame":796,"landmarks":{"left_eye":[666,-3],"nose":[636,2],"mouth_right":[626,14],"mouth_left":[645,25]}},"end":{"frame":841}}]}]'
 
-COLOR_DATA_TOPIC = "/device_0/sensor_1/Color_0/image/data"
+# Default publish time for the RealSense headers
 BAG_INITIALIZATION_TIME = Time(nsecs=1)
 
 # File types
@@ -36,22 +40,168 @@ BAG_FILE_TYPE = ("BAG File", "*.bag")
 EXCEL_FILE_TYPE = ("Excel Workbook", "*.xlsx, *.xlsm, *.xlsb, *.xls")
 JSON_FILE_TYPE = ("JSON File", "*.json")
 
-FACIAL_AREA_MARGIN = 40
-
 # Config
 FACE_REUSE_LIMIT = 3
 LANDMARK_DISTANCE_THRESHOLD = 50
 MAX_CONFIDENCE_SCORE = 1.0000000000000000
 IGNORE_STAFF = False  # Skip blurring the Staff
+MIN_OUTPUT_DURATION = 3  # Minimum output bag duration in seconds
 # Wound visibility
-KEEP_COMPLETELY_OUT = False
-KEEP_PARTIALLY_OUT = True
+KEEP_WOUND_COMPLETELY_OUT = False
+KEEP_WOUND_PARTIALLY_OUT = True
 PARTIALLY_OUT_TOLERANCE = 1  # 1: LIGHTLY, 2: MODERATELY, 3: HEAVILY
+KEEP_BLURRY_WOUND = False
+KEEP_COVERED_WOUND = False
+KEEP_WOUND_NEAR_FACE = False
+
+
+def combine_undesired_intervals(intervals: List[dict]) -> List[dict]:
+    if not intervals:
+        return []
+
+    # Sort intervals by start_frame
+    intervals.sort(key=lambda x: x["start_frame"])
+
+    combined_intervals = [intervals[0]]
+
+    for current_interval in intervals[1:]:
+        last_interval = combined_intervals[-1]
+
+        """
+        There could be dropped frames between two undesired intervals and the adjacent check (+1) could fail.
+        We need to check if the frames in between are desired, and then if these are enough to make a clip,
+        if not, discard them as undesired
+        """
+        # If the current interval overlaps or is adjacent to the last one, merge them
+        if (current_interval["start_frame"] < last_interval["end_frame"]) or (
+            current_interval["start_frame"] == last_interval["end_frame"] + 1
+        ):
+            last_interval["end_frame"] = max(
+                last_interval["end_frame"], current_interval["end_frame"]
+            )
+        else:
+            combined_intervals.append(current_interval)
+
+    return combined_intervals
+
+
+def get_undesired_intervals() -> List[dict]:
+    undesired_intervals = []
+
+    # Add intervals where wound visibility is none
+    if (not KEEP_WOUND_COMPLETELY_OUT) and (WOUND_VISIBILITY_NONE_CELL != ""):
+        undesired_intervals += json.loads(WOUND_VISIBILITY_NONE_CELL)
+
+    # Add intervals where wound visibility is partial based on tolerance
+    if WOUND_VISIBILITY_PARTIAL_CELL != "":
+        partial_intervals = json.loads(WOUND_VISIBILITY_PARTIAL_CELL)
+        filtered_intervals = []
+
+        if not KEEP_WOUND_PARTIALLY_OUT:
+            filtered_intervals = partial_intervals
+        else:
+            filtered_intervals = [
+                interval
+                for interval in partial_intervals
+                if interval["degree"] > PARTIALLY_OUT_TOLERANCE
+            ]
+
+        # Remove the 'degree' key from partial intervals
+        for interval in filtered_intervals:
+            interval.pop("degree", None)
+
+        undesired_intervals += filtered_intervals
+
+    if (not KEEP_BLURRY_WOUND) and (WOUND_BLURRY_CELL != ""):
+        undesired_intervals += json.loads(WOUND_BLURRY_CELL)
+
+    if (not KEEP_COVERED_WOUND) and (WOUND_COVERED_CELL != ""):
+        undesired_intervals += json.loads(WOUND_COVERED_CELL)
+
+    if (not KEEP_WOUND_NEAR_FACE) and (WOUND_NEAR_FACE_CELL != ""):
+        undesired_intervals += json.loads(WOUND_NEAR_FACE_CELL)
+
+    # Combine overlapping or adjacent undesired intervals
+    return combine_undesired_intervals(undesired_intervals)
+
+
+def get_desired_intervals(
+    undesired_intervals: List[dict],
+    first_frame_number: int,
+    last_frame_number: int,
+    fps: int,
+) -> List[dict]:
+    desired_intervals = []
+
+    # Initialize the start frame for the first desired interval
+    current_start = first_frame_number
+
+    for undesired in undesired_intervals:
+        # If there is a gap between the current start and the undesired interval, it's a desired interval
+        if undesired["start_frame"] > current_start:
+            desired_intervals.append(
+                {
+                    "start_frame": current_start,
+                    "end_frame": undesired["start_frame"] - 1,
+                }
+            )
+        # Move the start frame to the end of the current undesired interval + 1
+        current_start = undesired["end_frame"] + 1
+
+    # If there is a desired interval after the last undesired interval
+    if current_start <= last_frame_number:
+        desired_intervals.append(
+            {
+                "start_frame": current_start,
+                "end_frame": last_frame_number,
+            }
+        )
+
+    # Calculate the minimum number of frames for the desired interval
+    min_frames = fps * MIN_OUTPUT_DURATION
+
+    # Filter out desired intervals that are shorter than the minimum duration
+    filtered_desired_intervals = [
+        interval
+        for interval in desired_intervals
+        if (interval["end_frame"] - interval["start_frame"] + 1) >= min_frames
+    ]
+
+    return filtered_desired_intervals
+
+
+def is_frame_in_intervals(frame: int, intervals: List[dict]) -> bool:
+    for interval in intervals:
+        if interval["start_frame"] <= frame <= interval["end_frame"]:
+            return True
+
+    return False
+
+
+def create_output_bag(
+    input_bag_path: Path,
+    run_timestamp: str,
+    output_bag_clip: int,
+    output_directory_path: Path,
+) -> Tuple[rosbag.Bag, Path]:
+
+    output_bag_name = (
+        input_bag_path.stem
+        + "_EDIT-"
+        + run_timestamp
+        + "_CLIP-"
+        + str(output_bag_clip)
+        + input_bag_path.suffix
+    )
+
+    # Combine the new directory path and the new filename
+    output_bag_path = output_directory_path / output_bag_name
+
+    return rosbag.Bag(output_bag_path, "w"), output_bag_path
 
 
 def get_file_path(file_type: Tuple[str, str]) -> str:
     main_window = tkinter.Tk()
-    # main_window.title("TFG")
     main_window.withdraw()  # Hide the main window
 
     file_path = filedialog.askopenfilename(filetypes=[file_type])
@@ -104,10 +254,7 @@ def calculate_iou(box1: List[int], box2: List[int]) -> float:
 
 
 def process_cv_image(
-        cv_image: np.ndarray,
-        current_segment: dict,
-        current_persons: List[dict],
-        frame_number,
+    cv_image: np.ndarray, current_segment: dict, current_persons: List[dict]
 ) -> np.ndarray:
     image_height, image_width = cv_image.shape[:2]
 
@@ -182,9 +329,6 @@ def process_cv_image(
                 # Add the matched person's id to the assigned set
                 assigned_person_ids.add(matched_person_id)
             else:
-                # print(
-                #     f"Frame: {frame_number} - To be deleted: {detected_faces[face_code]}"
-                # )
                 # Remove the detected face if no good person match is found
                 del detected_faces[face_code]
 
@@ -288,31 +432,6 @@ def initialize_persons(current_persons: List[dict], known_persons: List[dict]) -
         )
 
 
-def calculate_facial_area(landmarks: dict) -> List[int]:
-    # Initialize min and max values to None
-    x_min, y_min, x_max, y_max = None, None, None, None
-
-    # Iterate through the landmarks and update min and max values
-    for landmark in landmarks.values():
-        x, y = landmark
-        if x_min is None or x < x_min:
-            x_min = x
-        if y_min is None or y < y_min:
-            y_min = y
-        if x_max is None or x > x_max:
-            x_max = x
-        if y_max is None or y > y_max:
-            y_max = y
-
-    # Apply the margin to the calculated bounding box
-    x_min -= FACIAL_AREA_MARGIN
-    y_min -= FACIAL_AREA_MARGIN
-    x_max += FACIAL_AREA_MARGIN
-    y_max += FACIAL_AREA_MARGIN
-
-    return [x_min, y_min, x_max, y_max]
-
-
 def update_persons(current_persons, headcount_change=None, detected_faces=None):
     # If the face data of entering or leaving persons has to be updated
     if headcount_change is not None:
@@ -322,15 +441,6 @@ def update_persons(current_persons, headcount_change=None, detected_faces=None):
         if headcount_change["type"] == "enters":
             # Person's facial landmarks that were manually obtained
             manual_landmarks = headcount_change["person"]["landmarks"]
-            """
-            Not sure if I should calculate a facial area, for now is not needed.
-            It prevents the landmark distance calculation from being used.
-            It would only be useful if the face isn't detected in the first frames.
-            """
-            # Calculate an approximation of the facial area and add it to the person's data
-            # approx_facial_area = calculate_facial_area(manual_landmarks)
-            # current_persons[person_id]["facial_area"] = approx_facial_area
-
             # Add the manually obtained landmarks to the person's data
             for landmark, coordinates in manual_landmarks.items():
                 current_persons[person_id]["landmarks"][landmark] = coordinates
@@ -358,6 +468,10 @@ def update_persons(current_persons, headcount_change=None, detected_faces=None):
 def main():
     input_bag_path = Path(get_file_path(BAG_FILE_TYPE))
 
+    # Get the current timestamp and format it
+    run_timestamp = datetime.now().strftime(format="%Y%m%dT%H%M%S")
+
+    # Temporary benchmark
     start_time = time.time()
 
     # Get the directory part of the path
@@ -369,20 +483,10 @@ def main():
     if not output_directory_path.exists():
         output_directory_path.mkdir(parents=True)
 
-    # Get the current timestamp and format it
-    current_timestamp = datetime.now().strftime(format="%Y%m%dT%H%M%S")
-
-    # Create the new filename with '_EDITED' appended before the extension
-    output_bag_name = (
-            input_bag_path.stem + "_EDIT_" + current_timestamp + input_bag_path.suffix
-    )
-
-    # Combine the new directory path and the new filename
-    output_bag_path = output_directory_path / output_bag_name
-
     input_bag = rosbag.Bag(input_bag_path, "r")
-    output_bag = rosbag.Bag(output_bag_path, "w")
 
+    color_data_topic = None
+    color_info_topic = None
     # Get the bag topics
     input_bag_info = input_bag.get_type_and_topic_info()
     input_bag_topics = input_bag_info.topics
@@ -390,37 +494,55 @@ def main():
     continuous_topics = []
     # Iterate through each topic and its info
     for topic, info in input_bag_topics.items():
+        # Check if topic is color info, save it in case it is
+        if (color_info_topic is None) and (topic.endswith("Color_0/info")):
+            color_info_topic = topic
+
         # Check if the topic has a frequency different from None
         if info.frequency is not None:
+            # Check if topic is color data, save it in case it is
+            if (color_data_topic is None) and ("Color_0/image/data" in topic):
+                color_data_topic = topic
+
             # Add the topic to the continuous topics list
             continuous_topics.append(topic)
             # Check for corresponding metadata topics and add them
-            metadata_topic = topic.replace('/data', '/metadata')
+            metadata_topic = topic.replace("/data", "/metadata")
             if metadata_topic in input_bag_topics:
                 continuous_topics.append(metadata_topic)
 
-    # Get the frame info of the color stream
+    # Get the color stream info
+    color_fps = None
     first_frame_number, last_frame_number = None, None
     color_msg_count = 0
-    for _, msg, _ in input_bag.read_messages(topics=[COLOR_DATA_TOPIC]):
-        # Increase color message count
-        color_msg_count += 1
+    for topic, msg, _ in input_bag.read_messages(
+        topics=[color_data_topic, color_info_topic]
+    ):
+        if color_info_topic in topic:
+            # Save the color stream fps
+            color_fps = msg.fps
 
-        # If it's the first message, save its frame number
-        if color_msg_count == 1:
-            first_frame_number = msg.header.seq
+        elif color_data_topic in topic:
+            # Increase color message count
+            color_msg_count += 1
 
-        # Remember the last frame number
-        last_frame_number = msg.header.seq
+            # If it's the first message, save its frame number
+            if color_msg_count == 1:
+                first_frame_number = msg.header.seq
+
+            # Remember the last frame number
+            last_frame_number = msg.header.seq
+
+    print(f"\nColor fps: {color_fps}")
 
     # FACES
     current_persons = []  # Updated data of the persons showing up in the color stream
 
     headcount_changes = []  # List of the headcount changes during the whole stream
-    stream_segments = []  # Color stream segmented by headcount changes
+    headcount_segments = []  # Color stream segmented by headcount changes
 
-    if recognizable_persons_col is not None:
-        recognizable_persons = json.loads(recognizable_persons_col)
+    if RECOGNIZABLE_PERSONS_CELL != "":
+        recognizable_persons = json.loads(RECOGNIZABLE_PERSONS_CELL)
 
         # Initialize the list of persons
         initialize_persons(
@@ -466,7 +588,7 @@ def main():
         # Process the headcount changes to segment the color stream
         for headcount_change in headcount_changes:
             if current_frame_number < headcount_change["frame"]:
-                stream_segments.append(
+                headcount_segments.append(
                     {
                         "start_frame": current_frame_number,
                         "end_frame": headcount_change["frame"] - 1,
@@ -480,7 +602,7 @@ def main():
                 current_headcount.remove(headcount_change["person"]["id"])
         # Add the final segment if there are frames left
         if current_frame_number <= last_frame_number:
-            stream_segments.append(
+            headcount_segments.append(
                 {
                     "start_frame": current_frame_number,
                     "end_frame": last_frame_number,
@@ -488,110 +610,147 @@ def main():
                 }
             )
 
-    # Stream segmentation variables
-    segment_index, current_stream_segment, bridge = None, None, None
-    if recognizable_persons_col is not None:
+    # Stream segmentation by headcount
+    headcount_segment_index = None
+    current_headcount_segment = None
+    bridge = None
+    if RECOGNIZABLE_PERSONS_CELL != "":
         # Initialize the stream segment
-        segment_index = 0
-        current_stream_segment = stream_segments[segment_index]
+        headcount_segment_index = 0
+        current_headcount_segment = headcount_segments[headcount_segment_index]
 
         # Initialize the CvBridge
         bridge = CvBridge()
 
     # Color stream variables
     color_msg_counter = 0
+    undesired_intervals = get_undesired_intervals()
+    desired_intervals = get_desired_intervals(
+        undesired_intervals=undesired_intervals,
+        first_frame_number=first_frame_number,
+        last_frame_number=last_frame_number,
+        fps=color_fps,
+    )
+    writing_desired_frames = False
 
-    for topic, msg, t in input_bag.read_messages(raw=True):
+    if len(desired_intervals) > 0:
 
-        if COLOR_DATA_TOPIC in topic:
+        current_output_bag_clip = 0
+        output_bag, current_output_bag_path = None, None
 
-            # Keep track of the current color message to print the progress of the process
-            color_msg_counter += 1
-            print(
-                f"\rProcessed {color_msg_counter}/{color_msg_count} messages form the color stream",
-                end="",
-                flush=True,
-            )
+        for topic, msg_raw, t in input_bag.read_messages(raw=True):
 
-            # Unpack the message tuple
-            msg_type, serialized_bytes, md5sum, pos, pytype = msg
+            if color_data_topic in topic:
 
-            # print(f"\nTimestamp: {t.secs}.{t.nsecs:09d}s, Topic: {topic}")
-            # print(f"datatype: {msg_type}")
-            # print(f"data: {serialized_bytes}")
-            # print(f"md5sum: {md5sum}")
-            # print(f"position: {pos}")
-            # print(f"pytype: {pytype}")
+                # Keep track of the current color message to print the progress of the process
+                color_msg_counter += 1
+                print(
+                    f"\rProcessed {color_msg_counter}/{color_msg_count} messages from the color stream",
+                    end="",
+                    flush=True,
+                )
 
-            # Deserialize the message bytes
-            deserialized_bytes = Image()
-            deserialized_bytes.deserialize(serialized_bytes)
+                # Unpack the message tuple
+                msg_type, serialized_bytes, md5sum, pos, pytype = msg_raw
 
-            # Save the header values
-            frame_number = deserialized_bytes.header.seq
-            frame_timestamp = deserialized_bytes.header.stamp
+                # Deserialize the message bytes
+                deserialized_bytes = Image()
+                deserialized_bytes.deserialize(serialized_bytes)
 
-            if recognizable_persons_col is not None:
-                # Update the current segment of the stream
-                if frame_number > current_stream_segment["end_frame"]:
-                    segment_index += 1
-                    current_stream_segment = stream_segments[segment_index]
+                # Save the header values
+                frame_number = deserialized_bytes.header.seq
+                frame_timestamp = deserialized_bytes.header.stamp
 
-                # Check if the current frame has a headcount change to update the persons
-                for headcount_change in headcount_changes:
-                    if frame_number == headcount_change["frame"]:
-                        # Insert or remove the facial data of the person involved in the headcount change
-                        update_persons(
-                            current_persons=current_persons,
-                            headcount_change=headcount_change,
+                if RECOGNIZABLE_PERSONS_CELL != "":
+                    # Update the current segment of the stream
+                    if frame_number > current_headcount_segment["end_frame"]:
+                        headcount_segment_index += 1
+                        current_headcount_segment = headcount_segments[
+                            headcount_segment_index
+                        ]
+
+                    # Check if the current frame has a headcount change to update the persons
+                    for headcount_change in headcount_changes:
+                        if frame_number == headcount_change["frame"]:
+                            # Insert or remove the facial data of the person involved in the headcount change
+                            update_persons(
+                                current_persons=current_persons,
+                                headcount_change=headcount_change,
+                            )
+
+                if is_frame_in_intervals(frame_number, desired_intervals):
+
+                    if RECOGNIZABLE_PERSONS_CELL != "":
+                        # Only process the current message if persons appear in the stream segment
+                        if len(current_headcount_segment["headcount"]) != 0:
+                            # Convert the ROS Image message to an OpenCV image
+                            cv_image = bridge.imgmsg_to_cv2(
+                                img_msg=deserialized_bytes,
+                                desired_encoding="bgr8",
+                            )
+
+                            # Process the image using OpenCV
+                            processed_cv_image = process_cv_image(
+                                cv_image=cv_image,
+                                current_segment=current_headcount_segment,
+                                current_persons=current_persons,
+                            )
+
+                            # Convert the OpenCV image back to a ROS Image message
+                            processed_ros_image = bridge.cv2_to_imgmsg(
+                                cvim=processed_cv_image,
+                                encoding="rgb8",
+                            )
+
+                            # Restore the message header values. Skip restoring the frame_id to prevent issues with newer SDK versions
+                            processed_ros_image.header.seq = frame_number
+                            processed_ros_image.header.stamp = frame_timestamp
+
+                            # Serialize the processed Image message
+                            buffer = io.BytesIO()
+                            processed_ros_image.serialize(buffer)
+
+                            # Turn the original message tuple into a list to allow component editing
+                            msg_raw_components = list(msg_raw)
+
+                            # Replace the original serialized bytes with the processed ones
+                            msg_raw_components[1] = buffer.getvalue()
+
+                            # Turn the list back into a tuple
+                            msg_raw = tuple(msg_raw_components)
+
+                    if not writing_desired_frames:
+                        output_bag, current_output_bag_path = create_output_bag(
+                            input_bag_path=input_bag_path,
+                            run_timestamp=run_timestamp,
+                            output_bag_clip=current_output_bag_clip,
+                            output_directory_path=output_directory_path,
                         )
+                        print(f"\nCreating new bag file: {current_output_bag_path}")
+                        writing_desired_frames = True
 
-                # Only process the current message if persons appear in the stream segment
-                if len(current_stream_segment["headcount"]) != 0:
-                    # Convert ROS Image message to OpenCV image
-                    cv_image = bridge.imgmsg_to_cv2(
-                        img_msg=deserialized_bytes,
-                        desired_encoding="bgr8",
-                    )
+                        # Write the RealSense headers first
+                        for topic_, msg_, t_ in input_bag.read_messages(
+                            end_time=BAG_INITIALIZATION_TIME, raw=True
+                        ):
+                            if topic_ not in continuous_topics:
+                                output_bag.write(topic=topic_, msg=msg_, t=t_, raw=True)
 
-                    # Process the image using OpenCV
-                    processed_cv_image = process_cv_image(
-                        cv_image=cv_image,
-                        current_segment=current_stream_segment,
-                        current_persons=current_persons,
-                        frame_number=frame_number,
-                    )
+                    output_bag.write(topic=topic, msg=msg_raw, t=t, raw=True)
 
-                    # Convert OpenCV image back to ROS Image message
-                    processed_ros_image = bridge.cv2_to_imgmsg(
-                        cvim=processed_cv_image,
-                        encoding="rgb8",
-                    )
+                else:
+                    if writing_desired_frames:
+                        output_bag.close()
+                        print(f"\nClosed bag file: {current_output_bag_path}")
+                        writing_desired_frames = False
+                        current_output_bag_clip += 1
 
-                    # Restore the header values
-                    processed_ros_image.header.seq = frame_number
-                    processed_ros_image.header.stamp = frame_timestamp
-                    # Replacing the frame_id prevents newer SDK versions from playing the file, so we leave it empty
-
-                    # Serialize the processed image message
-                    buffer = io.BytesIO()
-                    processed_ros_image.serialize(buffer)
-
-                    # Convert the original message tuple to a list
-                    msg_list = list(msg)
-
-                    # Replace the serialized_bytes in the list
-                    msg_list[1] = buffer.getvalue()
-
-                    # Convert the list back to a tuple
-                    msg = tuple(msg_list)
-
-        output_bag.write(topic=topic, msg=msg, t=t, raw=True)
+        if writing_desired_frames:
+            output_bag.close()
+            print(f"\nClosed bag file: {current_output_bag_path}")
 
     input_bag.close()
-    output_bag.close()
-
-    print(f"\nProcessing complete.\nEdited bag file saved to: {output_bag_path}")
+    print(f"\nProcessing complete.\nEdited bag files saved in: {output_directory_path}")
 
     end_time = time.time()
     duration = (end_time - start_time) / 60
