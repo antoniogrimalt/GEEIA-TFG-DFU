@@ -44,7 +44,8 @@ JSON_FILE_TYPE = ("JSON File", "*.json")
 
 # Config
 FACE_REUSE_LIMIT = 3
-LANDMARK_DISTANCE_THRESHOLD = 50
+MAX_LANDMARK_DISTANCE = 50
+FACE_DETECTION_THRESHOLD = 0.1
 MAX_CONFIDENCE_SCORE = 1.0000000000000000
 IGNORE_STAFF = False  # Skip blurring the Staff
 MIN_OUTPUT_DURATION = 3  # Minimum output bag duration in seconds
@@ -256,21 +257,80 @@ def calculate_iou(box1: List[int], box2: List[int]) -> float:
 
 
 def process_cv_image(
-    cv_image: np.ndarray, current_segment: dict, current_persons: List[dict]
+    cv_image: np.ndarray,
+    current_segment: dict,
+    current_persons: List[dict],
+    frame_number: int,
 ) -> np.ndarray:
     image_height, image_width = cv_image.shape[:2]
 
     # Detect faces using RetinaFace
-    detected_faces = RetinaFace.detect_faces(img_path=cv_image, threshold=0.1)
+    detected_faces = RetinaFace.detect_faces(
+        img_path=cv_image, threshold=FACE_DETECTION_THRESHOLD
+    )
+
+    if len(detected_faces) == 0:
+        cv_image_flipped = cv2.flip(src=cv_image, flipCode=0)
+        detected_faces_flipped = RetinaFace.detect_faces(
+            img_path=cv_image_flipped, threshold=FACE_DETECTION_THRESHOLD
+        )
+        if len(detected_faces_flipped) > 0:
+            print(
+                f"\nFrame: {frame_number} - Detected faces [unfiltered flipped]: {detected_faces_flipped}"
+            )
+
+            for face_code, detected_face in list(detected_faces_flipped.items()):
+                # Unflipped facial_area
+                facial_area = detected_face["facial_area"]
+                y2 = image_height - facial_area[1]
+                y1 = image_height - facial_area[3]
+                facial_area[1] = y1
+                facial_area[3] = y2
+                # Unflipped right_eye
+                right_eye = detected_face["landmarks"]["left_eye"]
+                right_eye[1] = image_height - right_eye[1]
+                # Unflipped left_eye
+                left_eye = detected_face["landmarks"]["right_eye"]
+                left_eye[1] = image_height - left_eye[1]
+                # Unflipped nose
+                nose = detected_face["landmarks"]["nose"]
+                nose[1] = image_height - nose[1]
+                # Unflipped mouth_right
+                mouth_right = detected_face["landmarks"]["mouth_left"]
+                mouth_right[1] = image_height - mouth_right[1]
+                # Unflipped mouth_left
+                mouth_left = detected_face["landmarks"]["mouth_right"]
+                mouth_left[1] = image_height - mouth_left[1]
+
+                unflipped_face = {
+                    "score": detected_face["score"],
+                    "facial_area": facial_area,
+                    "landmarks": {
+                        "right_eye": right_eye,
+                        "left_eye": left_eye,
+                        "nose": nose,
+                        "mouth_right": mouth_right,
+                        "mouth_left": mouth_left,
+                    },
+                }
+
+                print(f"\nUnflipped face {face_code}: {unflipped_face}")
+
+                detected_faces[face_code] = unflipped_face
 
     assigned_person_ids = set()
 
     # If faces were detected
-    if detected_faces is not None:
+    if len(detected_faces) > 0:
+        print(
+            f"\nFrame: {frame_number} - Detected faces [unfiltered]: {detected_faces}"
+        )
+
         # Iterate through them
         for face_code, detected_face in list(detected_faces.items()):
             matched_person_id = None
             max_iou = 0.0
+            min_landmark_distance = float("inf")
 
             for person in current_persons:
 
@@ -299,7 +359,7 @@ def process_cv_image(
 
                     if valid_landmark_count > 0:
                         average_distance = total_distance / valid_landmark_count
-                        if average_distance < LANDMARK_DISTANCE_THRESHOLD:
+                        if average_distance < MAX_LANDMARK_DISTANCE:
                             matched_person_id = person["id"]
                             break
                 else:
@@ -311,6 +371,35 @@ def process_cv_image(
                     if iou > max_iou:
                         max_iou = iou
                         matched_person_id = person["id"]
+
+                        # Secondary check using landmarks to refine the match
+                        if matched_person_id is not None:
+                            total_distance = 0
+                            valid_landmark_count = 0
+
+                            for landmark, landmark_value in person["landmarks"].items():
+                                if landmark_value is not None:
+                                    detected_point = np.array(
+                                        detected_face["landmarks"][landmark]
+                                    )
+                                    known_point = np.array(landmark_value)
+
+                                    distance = np.linalg.norm(
+                                        detected_point - known_point
+                                    )
+
+                                    total_distance += distance
+                                    valid_landmark_count += 1
+
+                            if valid_landmark_count > 0:
+                                average_distance = total_distance / valid_landmark_count
+                                if (
+                                    average_distance < MAX_LANDMARK_DISTANCE
+                                    and average_distance < min_landmark_distance
+                                ):
+                                    min_landmark_distance = average_distance
+                                else:
+                                    matched_person_id = None
 
             if matched_person_id is not None:
                 # Ensure the facial area touches the frame border if needed
@@ -336,7 +425,9 @@ def process_cv_image(
 
         # If not all detected faces were deleted
         if len(detected_faces) > 0:
-            # print(f"Frame: {frame_number} - Remaining faces: {detected_faces}")
+            print(
+                f"Frame: {frame_number} - Detected faces [filtered]: {detected_faces}"
+            )
 
             # Update the face data of the persons present in the segment
             update_persons(
@@ -349,33 +440,17 @@ def process_cv_image(
 
     # If there are persons missing in the detection list
     if len(missing_person_ids) > 0:
-        # If no faces were detected
-        if detected_faces is None:
-            # Initialize the detected_faces dict
-            detected_faces = {}
 
         # Iterate through the missing persons to check if their previous facial data exists and can be used
         for index, person_id in enumerate(missing_person_ids, start=1):
-            # If the reuse limit for the same face data hasn't been reached yet
-            """
-            Doesn't make sense, because the objective is to blur the face.
-            A limit would mean that maybe there are going to be frames without blurring.
-            Better to have a misaligned blur than none.
-            """
-            if current_persons[person_id]["face_data_usage_count"] < FACE_REUSE_LIMIT:
-                """
-                Not yet sure if this should be inside the following if condition.
-                We are trying to not be more than X frames far from the original position.
-                """
-                current_persons[person_id]["face_data_usage_count"] += 1
 
-                if current_persons[person_id]["facial_area"] is not None:
-                    detected_faces[f"previous_{index}"] = {
-                        "score": MAX_CONFIDENCE_SCORE,
-                        "facial_area": current_persons[person_id]["facial_area"],
-                        "landmarks": current_persons[person_id]["landmarks"],
-                        "person_id": person_id,
-                    }
+            if current_persons[person_id]["facial_area"] is not None:
+                detected_faces[f"previous_{index}"] = {
+                    "score": MAX_CONFIDENCE_SCORE,
+                    "facial_area": current_persons[person_id]["facial_area"],
+                    "landmarks": current_persons[person_id]["landmarks"],
+                    "person_id": person_id,
+                }
 
     if len(detected_faces) > 0:
         # Blur each detected face
@@ -429,7 +504,6 @@ def initialize_persons(current_persons: List[dict], known_persons: List[dict]) -
                     "mouth_right": None,
                     "mouth_left": None,
                 },
-                "face_data_usage_count": 0,
             }
         )
 
@@ -454,7 +528,7 @@ def update_persons(current_persons, headcount_change=None, detected_faces=None):
             old_landmarks = current_persons[person_id]["landmarks"]
             for landmark, coordinates in old_landmarks.items():
                 current_persons[person_id]["landmarks"][landmark] = None
-            current_persons[person_id]["face_data_usage_count"] = 0
+
     # If the face data of detected persons has to be updated
     elif detected_faces is not None:
         for face_id, detected_face in detected_faces.items():
@@ -464,7 +538,6 @@ def update_persons(current_persons, headcount_change=None, detected_faces=None):
             current_persons[person_id]["facial_area"] = detected_face["facial_area"]
             for landmark, coordinates in detected_face["landmarks"].items():
                 current_persons[person_id]["landmarks"][landmark] = coordinates
-            current_persons[person_id]["face_data_usage_count"] = 1
 
 
 def main():
@@ -534,8 +607,6 @@ def main():
 
             # Remember the last frame number
             last_frame_number = msg.header.seq
-
-    print(f"\nColor fps: {color_fps}")
 
     # FACES
     current_persons = []  # Updated data of the persons showing up in the color stream
@@ -645,14 +716,6 @@ def main():
 
             if color_data_topic in topic:
 
-                # Keep track of the current color message to print the progress of the process
-                color_msg_counter += 1
-                print(
-                    f"\rProcessed {color_msg_counter}/{color_msg_count} messages from the color stream",
-                    end="",
-                    flush=True,
-                )
-
                 # Unpack the message tuple
                 msg_type, serialized_bytes, md5sum, pos, pytype = msg_raw
 
@@ -663,6 +726,14 @@ def main():
                 # Save the header values
                 frame_number = deserialized_bytes.header.seq
                 frame_timestamp = deserialized_bytes.header.stamp
+
+                # Keep track of the current color message to print the progress of the process
+                color_msg_counter += 1
+                print(
+                    f"\rProcessed {color_msg_counter}/{color_msg_count} color data messages. Current color frame: {frame_number}",
+                    end="",
+                    flush=True,
+                )
 
                 if RECOGNIZABLE_PERSONS_CELL != "":
                     # Update the current segment of the stream
@@ -698,6 +769,7 @@ def main():
                                 cv_image=cv_image,
                                 current_segment=current_headcount_segment,
                                 current_persons=current_persons,
+                                frame_number=frame_number,
                             )
 
                             # Convert the OpenCV image back to a ROS Image message
