@@ -35,6 +35,8 @@ RECOGNIZABLE_PERSONS_CELL = '[{"type":"STAFF","appearances":[{"start":{"frame":1
 # Default publish time for the RealSense headers
 BAG_INITIALIZATION_TIME = Time(nsecs=1)
 
+BAG_SENSORS_START_TIME = Time(nsecs=20000)
+
 # File types
 BAG_FILE_TYPE = ("BAG File", "*.bag")
 EXCEL_FILE_TYPE = ("Excel Workbook", "*.xlsx, *.xlsm, *.xlsb, *.xls")
@@ -632,6 +634,7 @@ def main():
         fps=color_fps,
     )
     writing_desired_frames = False
+    clip_start_time = None
 
     if len(desired_intervals) > 0:
 
@@ -678,6 +681,7 @@ def main():
                                 headcount_change=headcount_change,
                             )
 
+                # If the current color frame is part of a desired interval
                 if is_frame_in_intervals(frame_number, desired_intervals):
 
                     if RECOGNIZABLE_PERSONS_CELL != "":
@@ -719,33 +723,60 @@ def main():
                             # Turn the list back into a tuple
                             msg_raw = tuple(msg_raw_components)
 
+                    # If a clip isn't being written
                     if not writing_desired_frames:
+                        # Update the flag to enable the writing
+                        writing_desired_frames = True
+
+                        # Create a new output bag clip
                         output_bag, current_output_bag_path = create_output_bag(
                             input_bag_path=input_bag_path,
                             run_timestamp=run_timestamp,
                             output_bag_clip=current_output_bag_clip,
                             output_directory_path=output_directory_path,
                         )
-                        print(f"\nCreating new bag file: {current_output_bag_path}")
-                        writing_desired_frames = True
+                        print(f"\nCreated bag file: {current_output_bag_path}")
 
-                        # Write the RealSense headers first
-                        for topic_, msg_, t_ in input_bag.read_messages(
+                        # Write the RealSense config messages to the output bag clip
+                        for rs_topic, rs_msg, rs_t in input_bag.read_messages(
                             end_time=BAG_INITIALIZATION_TIME, raw=True
                         ):
-                            if topic_ not in continuous_topics:
-                                output_bag.write(topic=topic_, msg=msg_, t=t_, raw=True)
+                            output_bag.write(
+                                topic=rs_topic, msg=rs_msg, t=rs_t, raw=True
+                            )
 
-                    output_bag.write(topic=topic, msg=msg_raw, t=t, raw=True)
-
+                # If the current color frame isn't part of a desired interval
                 else:
+                    # and a clip was being written
                     if writing_desired_frames:
+                        # Update the flag to disable the writing
+                        writing_desired_frames = False
+
+                        # Close the current output bag clip
                         output_bag.close()
                         print(f"\nClosed bag file: {current_output_bag_path}")
-                        writing_desired_frames = False
-                        current_output_bag_clip += 1
 
+                        # Prepare the variables for the next clip
+                        current_output_bag_clip += 1
+                        clip_start_time = None
+
+            # If a clip is being written
+            if writing_desired_frames:
+                # save its start time if it wasn't yet found
+                if clip_start_time is None:
+                    clip_start_time = t
+
+                # Write with the applied time offset
+                output_bag.write(
+                    topic=topic,
+                    msg=msg_raw,
+                    t=(t - clip_start_time + BAG_SENSORS_START_TIME),
+                    raw=True,
+                )
+
+        # If clip was being written after all the input_bag's messages were read
         if writing_desired_frames:
+            # Close the current output bag clip
             output_bag.close()
             print(f"\nClosed bag file: {current_output_bag_path}")
 
