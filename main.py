@@ -272,9 +272,8 @@ def calculate_avg_landmark_distance(
 
 def process_frame(
     frame_image: np.ndarray,
-    current_segment: dict,
-    current_persons: List[dict],
-    frame_number: int,
+    headcount_segment: dict,
+    tracked_persons: List[dict],
     config: dict,
 ) -> np.ndarray:
     image_height, image_width = frame_image.shape[:2]
@@ -342,7 +341,7 @@ def process_frame(
             max_facial_area_iou = 0.0
             min_landmark_distance = float("inf")
 
-            for person in current_persons:
+            for person in tracked_persons:
 
                 # Skip if this person's id is already assigned
                 if person["id"] in assigned_person_ids:
@@ -426,12 +425,12 @@ def process_frame(
 
             # Update the face data of the persons present in the segment
             update_persons(
-                current_persons=current_persons,
+                tracked_persons=tracked_persons,
                 detected_faces=detected_faces,
             )
 
     # Check for missing persons
-    missing_person_ids = set(current_segment["headcount"]) - assigned_person_ids
+    missing_person_ids = set(headcount_segment["headcount"]) - assigned_person_ids
 
     # If there are persons missing in the detection list
     if len(missing_person_ids) > 0:
@@ -439,11 +438,11 @@ def process_frame(
         # Iterate through the missing persons to check if their previous facial data exists and can be used
         for index, person_id in enumerate(missing_person_ids, start=1):
 
-            if current_persons[person_id]["facial_area"] is not None:
+            if tracked_persons[person_id]["facial_area"] is not None:
                 detected_faces[f"previous_{index}"] = {
                     "score": config["MAX_CONFIDENCE_SCORE"],
-                    "facial_area": current_persons[person_id]["facial_area"],
-                    "landmarks": current_persons[person_id]["landmarks"],
+                    "facial_area": tracked_persons[person_id]["facial_area"],
+                    "landmarks": tracked_persons[person_id]["landmarks"],
                     "person_id": person_id,
                 }
 
@@ -482,14 +481,14 @@ def process_frame(
     return frame_image
 
 
-def initialize_persons(
-    current_persons: List[dict], known_persons: List[dict], ignore_staff: bool
+def initialize_tracked_persons(
+    tracked_persons: List[dict], person_appearances: List[dict], ignore_staff: bool
 ) -> None:
-    for index, person in enumerate(known_persons):
+    for index, person in enumerate(person_appearances):
         if ignore_staff and person["type"] == "STAFF":
             continue
 
-        current_persons.append(
+        tracked_persons.append(
             {
                 "id": index,
                 "type": person["type"],
@@ -505,7 +504,7 @@ def initialize_persons(
         )
 
 
-def update_persons(current_persons, headcount_change=None, detected_faces=None):
+def update_persons(tracked_persons, headcount_change=None, detected_faces=None):
     # If the face data of entering or leaving persons has to be updated
     if headcount_change is not None:
         # Identifier of the person involved in the headcount change
@@ -516,15 +515,15 @@ def update_persons(current_persons, headcount_change=None, detected_faces=None):
             manual_landmarks = headcount_change["person"]["landmarks"]
             # Add the manually obtained landmarks to the person's data
             for landmark, coordinates in manual_landmarks.items():
-                current_persons[person_id]["landmarks"][landmark] = coordinates
+                tracked_persons[person_id]["landmarks"][landmark] = coordinates
         # If the person left the scene
         elif headcount_change["type"] == "leaves":
             # Clear their facial_area
-            current_persons[person_id]["facial_area"] = None
+            tracked_persons[person_id]["facial_area"] = None
             # Clear their face landmarks
-            old_landmarks = current_persons[person_id]["landmarks"]
+            old_landmarks = tracked_persons[person_id]["landmarks"]
             for landmark, coordinates in old_landmarks.items():
-                current_persons[person_id]["landmarks"][landmark] = None
+                tracked_persons[person_id]["landmarks"][landmark] = None
 
     # If the face data of detected persons has to be updated
     elif detected_faces is not None:
@@ -532,9 +531,9 @@ def update_persons(current_persons, headcount_change=None, detected_faces=None):
             # Identifier of the person whose face was detected
             person_id = detected_face["person_id"]
             # Update the facial area and landmarks for the detected person
-            current_persons[person_id]["facial_area"] = detected_face["facial_area"]
+            tracked_persons[person_id]["facial_area"] = detected_face["facial_area"]
             for landmark, coordinates in detected_face["landmarks"].items():
-                current_persons[person_id]["landmarks"][landmark] = coordinates
+                tracked_persons[person_id]["landmarks"][landmark] = coordinates
 
 
 def main():
@@ -556,10 +555,10 @@ def main():
         dataset_metadata_df.iloc[:, 6] == input_bag_name  # Column "G"
     ]
 
-    recognizable_persons_cell = input_bag_metadata.iloc[:, 34].values[0]  # Column "AI"
-    recognizable_persons = None
-    if not pd.isna(recognizable_persons_cell):
-        recognizable_persons = json.loads(recognizable_persons_cell)
+    person_appearances_cell = input_bag_metadata.iloc[:, 34].values[0]  # Column "AI"
+    person_appearances = None
+    if not pd.isna(person_appearances_cell):
+        person_appearances = json.loads(person_appearances_cell)
 
     # Get the current timestamp and format it
     run_timestamp = datetime.now().strftime(format="%Y%m%dT%H%M%S")
@@ -642,21 +641,21 @@ def main():
     if len(desired_intervals) > 0:
 
         # Color stream
-        current_persons = []  # Updated data of the persons appearing
+        tracked_persons = []  # Updated data of the persons appearing
         headcount_changes = []  # List of the headcount changes during the stream
         headcount_segments = []  # Stream segmented by headcount changes
 
-        if recognizable_persons is not None:
+        if person_appearances is not None:
 
-            # Initialize the list of persons
-            initialize_persons(
-                current_persons=current_persons,
-                known_persons=recognizable_persons,
+            # Initialize the list of tracked persons
+            initialize_tracked_persons(
+                tracked_persons=tracked_persons,
+                person_appearances=person_appearances,
                 ignore_staff=config["IGNORE_STAFF"],
             )
 
             # Populate the headcount changes list
-            for index, person in enumerate(recognizable_persons):
+            for index, person in enumerate(person_appearances):
                 # Skip considering the appearances of the hospital staff if requested
                 if config["IGNORE_STAFF"] and person["type"] == "STAFF":
                     continue
@@ -721,7 +720,7 @@ def main():
         headcount_segment_index = None
         current_headcount_segment = None
         bridge = None
-        if recognizable_persons is not None:
+        if person_appearances is not None:
             # Initialize the stream segment
             headcount_segment_index = 0
             current_headcount_segment = headcount_segments[headcount_segment_index]
@@ -761,7 +760,7 @@ def main():
 
                 processed_cv_image = None
 
-                if recognizable_persons is not None:
+                if person_appearances is not None:
                     # Update the current segment of the stream
                     if frame_number > current_headcount_segment["end_frame"]:
                         headcount_segment_index += 1
@@ -774,7 +773,7 @@ def main():
                         if frame_number == headcount_change["frame"]:
                             # Insert or remove the facial data of the person involved in the headcount change
                             update_persons(
-                                current_persons=current_persons,
+                                tracked_persons=tracked_persons,
                                 headcount_change=headcount_change,
                             )
 
@@ -789,38 +788,39 @@ def main():
                         # Process the image to keep track of the persons appearing and blur their faces
                         processed_cv_image = process_frame(
                             frame_image=cv_image,
-                            current_segment=current_headcount_segment,
-                            current_persons=current_persons,
-                            frame_number=frame_number,
+                            headcount_segment=current_headcount_segment,
+                            tracked_persons=tracked_persons,
                             config=config,
                         )
 
                 # If the current color frame is part of a desired interval
                 if is_frame_in_intervals(frame_number, desired_intervals):
 
-                    if recognizable_persons is not None:
-                        # Convert the OpenCV image back to a ROS Image message
-                        processed_ros_image = bridge.cv2_to_imgmsg(
-                            cvim=processed_cv_image,
-                            encoding="rgb8",
-                        )
+                    if person_appearances is not None:
+                        # Only process the current message if persons appear in the stream segment
+                        if len(current_headcount_segment["headcount"]) != 0:
+                            # Convert the OpenCV image back to a ROS Image message
+                            processed_ros_image = bridge.cv2_to_imgmsg(
+                                cvim=processed_cv_image,
+                                encoding="rgb8",
+                            )
 
-                        # Restore the message header values. Skip restoring the frame_id to prevent issues with newer SDK versions
-                        processed_ros_image.header.seq = frame_number
-                        processed_ros_image.header.stamp = frame_timestamp
+                            # Restore the message header values. Skip restoring the frame_id to prevent issues with newer SDK versions
+                            processed_ros_image.header.seq = frame_number
+                            processed_ros_image.header.stamp = frame_timestamp
 
-                        # Serialize the processed Image message
-                        buffer = io.BytesIO()
-                        processed_ros_image.serialize(buffer)
+                            # Serialize the processed Image message
+                            buffer = io.BytesIO()
+                            processed_ros_image.serialize(buffer)
 
-                        # Turn the original message tuple into a list to allow component editing
-                        msg_raw_components = list(msg_raw)
+                            # Turn the original message tuple into a list to allow component editing
+                            msg_raw_components = list(msg_raw)
 
-                        # Replace the original serialized bytes with the processed ones
-                        msg_raw_components[1] = buffer.getvalue()
+                            # Replace the original serialized bytes with the processed ones
+                            msg_raw_components[1] = buffer.getvalue()
 
-                        # Turn the list back into a tuple
-                        msg_raw = tuple(msg_raw_components)
+                            # Turn the list back into a tuple
+                            msg_raw = tuple(msg_raw_components)
 
                     # If a clip isn't being written
                     if not writing_desired_frames:
