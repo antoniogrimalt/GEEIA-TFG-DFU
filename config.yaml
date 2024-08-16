@@ -1,0 +1,21 @@
+# This is the configuration file
+
+MAX_LANDMARK_DISTANCE: 50  # Maximum allowable distance for landmarks
+
+FACE_DETECTION_THRESHOLD: 0.1  # Threshold for face detection confidence
+
+MAX_CONFIDENCE_SCORE: 1.0  # Maximum possible confidence score
+
+IGNORE_STAFF: false  # Whether to ignore staff in processing
+
+# Minimum output duration in seconds
+MIN_OUTPUT_DURATION: 3
+
+# Wound visibility settings
+KEEP_WOUND_COMPLETELY_OUT: false  # Keep the wound completely out of the frame
+KEEP_WOUND_PARTIALLY_OUT: true  # Allow the wound to be partially out of the frame
+PARTIALLY_OUT_TOLERANCE: 1  # Tolerance level: 1: LIGHTLY, 2: MODERATELY, 3: HEAVILY
+
+KEEP_BLURRY_WOUND: false  # Keep blurry wounds in the frame
+KEEP_COVERED_WOUND: false  # Keep wounds that are covered in the frame
+KEEP_WOUND_NEAR_FACE: false  # Keep wounds that are near the face in the frame

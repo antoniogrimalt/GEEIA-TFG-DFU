@@ -2,35 +2,18 @@ import tkinter
 from tkinter import filedialog
 from pathlib import Path
 from datetime import datetime
-from typing import Tuple, List
+from typing import Tuple, List, Dict, Optional
 from sensor_msgs.msg import Image
 import rosbag
 import cv2
 from cv_bridge import CvBridge
 from retinaface import RetinaFace
 import time
-import json
+import json, yaml
 import numpy as np
 from genpy import Time
 import io
-
-# Temporary values. These will be extracted from an Excel file.
-# On frame wound visibility
-WOUND_VISIBILITY_FULL_CELL = '[{"start_frame":96,"end_frame":183},{"start_frame":197,"end_frame":208},{"start_frame":223,"end_frame":300},{"start_frame":386,"end_frame":420},{"start_frame":438,"end_frame":442},{"start_frame":470,"end_frame":515},{"start_frame":535,"end_frame":545},{"start_frame":588,"end_frame":626},{"start_frame":637,"end_frame":742},{"start_frame":824,"end_frame":862},{"start_frame":887,"end_frame":941},{"start_frame":968,"end_frame":1028},{"start_frame":1134,"end_frame":1140}]'
-WOUND_VISIBILITY_PARTIAL_CELL = '[{"start_frame":185,"end_frame":188,"degree":1},{"start_frame":189,"end_frame":193,"degree":2},{"start_frame":194,"end_frame":196,"degree":1},{"start_frame":209,"end_frame":222,"degree":1},{"start_frame":301,"end_frame":303,"degree":1},{"start_frame":304,"end_frame":308,"degree":2},{"start_frame":309,"end_frame":320,"degree":3},{"start_frame":321,"end_frame":328,"degree":2},{"start_frame":329,"end_frame":334,"degree":1},{"start_frame":335,"end_frame":364,"degree":2},{"start_frame":365,"end_frame":380,"degree":3},{"start_frame":381,"end_frame":384,"degree":2},{"start_frame":385,"end_frame":385,"degree":1},{"start_frame":421,"end_frame":437,"degree":1},{"start_frame":443,"end_frame":452,"degree":1},{"start_frame":453,"end_frame":466,"degree":2},{"start_frame":467,"end_frame":469,"degree":1},{"start_frame":516,"end_frame":534,"degree":1},{"start_frame":546,"end_frame":567,"degree":1},{"start_frame":568,"end_frame":577,"degree":2},{"start_frame":578,"end_frame":587,"degree":1},{"start_frame":627,"end_frame":636,"degree":1},{"start_frame":743,"end_frame":762,"degree":1},{"start_frame":763,"end_frame":810,"degree":2},{"start_frame":811,"end_frame":823,"degree":1},{"start_frame":863,"end_frame":865,"degree":1},{"start_frame":866,"end_frame":871,"degree":2},{"start_frame":872,"end_frame":886,"degree":1},{"start_frame":942,"end_frame":967,"degree":1},{"start_frame":1029,"end_frame":1033,"degree":1},{"start_frame":1034,"end_frame":1046,"degree":2},{"start_frame":1047,"end_frame":1125,"degree":3},{"start_frame":1126,"end_frame":1129,"degree":2},{"start_frame":1130,"end_frame":1133,"degree":1}]'
-WOUND_VISIBILITY_NONE_CELL = (
-    '[{"start_frame":39,"end_frame":83},{"start_frame":1162,"end_frame":1196}]'
-)
-# Issues with the wound visibility
-WOUND_BLURRY_CELL = (
-    '[{"start_frame":84,"end_frame":94},{"start_frame":1141,"end_frame":1161}]'
-)
-WOUND_COVERED_CELL = (
-    '[{"start_frame":994,"end_frame":1036},{"start_frame":1156,"end_frame":1161}]'
-)
-WOUND_NEAR_FACE_CELL = '[{"start_frame":832,"end_frame":841}]'
-# Persons that can be recognized in the color frames
-RECOGNIZABLE_PERSONS_CELL = '[{"type":"STAFF","appearances":[{"start":{"frame":117,"landmarks":{"right_eye":[256,485],"nose":[234,483],"mouth_right":[240,457],"mouth_left":[215,470]}},"end":{"frame":226}}]},{"type":"PATIENT","appearances":[{"start":{"frame":796,"landmarks":{"left_eye":[666,-3],"nose":[636,2],"mouth_right":[626,14],"mouth_left":[645,25]}},"end":{"frame":841}}]}]'
+import pandas as pd
 
 # Default publish time for the RealSense headers
 BAG_INITIALIZATION_TIME = Time(nsecs=1)
@@ -39,23 +22,8 @@ BAG_SENSORS_START_TIME = Time(nsecs=20000)
 
 # File types
 BAG_FILE_TYPE = ("BAG File", "*.bag")
-EXCEL_FILE_TYPE = ("Excel Workbook", "*.xlsx, *.xlsm, *.xlsb, *.xls")
+EXCEL_FILE_TYPE = ("Excel Workbook", "*.xlsx *.xlsm *.xlsb *.xls")
 JSON_FILE_TYPE = ("JSON File", "*.json")
-
-# Config
-FACE_REUSE_LIMIT = 3
-MAX_LANDMARK_DISTANCE = 50
-FACE_DETECTION_THRESHOLD = 0.1
-MAX_CONFIDENCE_SCORE = 1.0000000000000000
-IGNORE_STAFF = False  # Skip blurring the Staff
-MIN_OUTPUT_DURATION = 3  # Minimum output bag duration in seconds
-# Wound visibility
-KEEP_WOUND_COMPLETELY_OUT = False
-KEEP_WOUND_PARTIALLY_OUT = True
-PARTIALLY_OUT_TOLERANCE = 1  # 1: LIGHTLY, 2: MODERATELY, 3: HEAVILY
-KEEP_BLURRY_WOUND = False
-KEEP_COVERED_WOUND = False
-KEEP_WOUND_NEAR_FACE = False
 
 
 def combine_undesired_intervals(intervals: List[dict]) -> List[dict]:
@@ -88,25 +56,27 @@ def combine_undesired_intervals(intervals: List[dict]) -> List[dict]:
     return combined_intervals
 
 
-def get_undesired_intervals() -> List[dict]:
+def get_undesired_intervals(bag_metadata: pd.DataFrame, config: dict) -> List[dict]:
+
+    wound_visibility_partial = bag_metadata.iloc[:, 29].values[0]  # Column "AD"
+    wound_visibility_none = bag_metadata.iloc[:, 30].values[0]  # Column "AE"
+    wound_blurry = bag_metadata.iloc[:, 31].values[0]  # Column "AF"
+    wound_covered = bag_metadata.iloc[:, 32].values[0]  # Column "AG"
+    wound_near_face = bag_metadata.iloc[:, 33].values[0]  # Column "AH"
+
     undesired_intervals = []
 
-    # Add intervals where wound visibility is none
-    if (not KEEP_WOUND_COMPLETELY_OUT) and (WOUND_VISIBILITY_NONE_CELL != ""):
-        undesired_intervals += json.loads(WOUND_VISIBILITY_NONE_CELL)
-
     # Add intervals where wound visibility is partial based on tolerance
-    if WOUND_VISIBILITY_PARTIAL_CELL != "":
-        partial_intervals = json.loads(WOUND_VISIBILITY_PARTIAL_CELL)
-        filtered_intervals = []
+    if not pd.isna(wound_visibility_partial):
+        partial_intervals = json.loads(wound_visibility_partial)
 
-        if not KEEP_WOUND_PARTIALLY_OUT:
+        if not config["KEEP_WOUND_PARTIALLY_OUT"]:
             filtered_intervals = partial_intervals
         else:
             filtered_intervals = [
                 interval
                 for interval in partial_intervals
-                if interval["degree"] > PARTIALLY_OUT_TOLERANCE
+                if interval["degree"] > config["PARTIALLY_OUT_TOLERANCE"]
             ]
 
         # Remove the 'degree' key from partial intervals
@@ -115,14 +85,20 @@ def get_undesired_intervals() -> List[dict]:
 
         undesired_intervals += filtered_intervals
 
-    if (not KEEP_BLURRY_WOUND) and (WOUND_BLURRY_CELL != ""):
-        undesired_intervals += json.loads(WOUND_BLURRY_CELL)
+    # Add intervals where wound visibility is none
+    if (not config["KEEP_WOUND_COMPLETELY_OUT"]) and (
+        not pd.isna(wound_visibility_none)
+    ):
+        undesired_intervals += json.loads(wound_visibility_none)
 
-    if (not KEEP_COVERED_WOUND) and (WOUND_COVERED_CELL != ""):
-        undesired_intervals += json.loads(WOUND_COVERED_CELL)
+    if (not config["KEEP_BLURRY_WOUND"]) and (not pd.isna(wound_blurry)):
+        undesired_intervals += json.loads(wound_blurry)
 
-    if (not KEEP_WOUND_NEAR_FACE) and (WOUND_NEAR_FACE_CELL != ""):
-        undesired_intervals += json.loads(WOUND_NEAR_FACE_CELL)
+    if (not config["KEEP_COVERED_WOUND"]) and (not pd.isna(wound_covered)):
+        undesired_intervals += json.loads(wound_covered)
+
+    if (not config["KEEP_WOUND_NEAR_FACE"]) and (not pd.isna(wound_near_face)):
+        undesired_intervals += json.loads(wound_near_face)
 
     # Combine overlapping or adjacent undesired intervals
     return combine_undesired_intervals(undesired_intervals)
@@ -133,6 +109,7 @@ def get_desired_intervals(
     first_frame_number: int,
     last_frame_number: int,
     fps: int,
+    min_output_duration: int,
 ) -> List[dict]:
     desired_intervals = []
 
@@ -161,7 +138,7 @@ def get_desired_intervals(
         )
 
     # Calculate the minimum number of frames for the desired interval
-    min_frames = fps * MIN_OUTPUT_DURATION
+    min_frames = fps * min_output_duration
 
     # Filter out desired intervals that are shorter than the minimum duration
     filtered_desired_intervals = [
@@ -203,13 +180,14 @@ def create_output_bag(
     return rosbag.Bag(output_bag_path, "w"), output_bag_path
 
 
-def get_file_path(file_type: Tuple[str, str]) -> str:
+def get_file_path(file_type: Tuple[str, str]) -> Path:
     main_window = tkinter.Tk()
     main_window.withdraw()  # Hide the main window
 
-    file_path = filedialog.askopenfilename(filetypes=[file_type])
+    file_path = Path(filedialog.askopenfilename(filetypes=[file_type]))
 
     main_window.destroy()  # Close the main window
+
     return file_path
 
 
@@ -256,53 +234,94 @@ def calculate_iou(box1: List[int], box2: List[int]) -> float:
     return iou
 
 
-def process_cv_image(
-    cv_image: np.ndarray,
+def calculate_avg_landmark_distance(
+    person_landmarks: Dict[str, List[float]], detected_landmarks: Dict[str, List[float]]
+) -> Optional[float]:
+    """
+    Calculate the average distance between corresponding landmarks of a person and a detected face.
+
+    Parameters:
+    person_landmarks (Dict[str, List[float]]): A dictionary of known landmarks for a person.
+                                               Keys are landmark names (e.g., 'right_eye', 'nose'), and values are [x, y] coordinates.
+    detected_landmarks (Dict[str, List[float]]): A dictionary of detected landmarks from the current face.
+                                                 Keys are landmark names (e.g., 'right_eye', 'nose'), and values are [x, y] coordinates.
+
+    Returns:
+    Optional[float]: The average distance between corresponding landmarks, or None if no valid landmarks are found.
+    """
+    total_distance = 0
+    valid_landmark_count = 0
+
+    for landmark, landmark_value in person_landmarks.items():
+        if landmark_value is not None:
+            detected_point = np.array(detected_landmarks[landmark])
+
+            known_point = np.array(landmark_value)
+
+            distance = np.linalg.norm(detected_point - known_point)
+
+            total_distance += distance
+            valid_landmark_count += 1
+
+    if valid_landmark_count > 0:
+        average_distance = total_distance / valid_landmark_count
+        return average_distance
+    else:
+        return None
+
+
+def process_frame(
+    frame_image: np.ndarray,
     current_segment: dict,
     current_persons: List[dict],
     frame_number: int,
+    config: dict,
 ) -> np.ndarray:
-    image_height, image_width = cv_image.shape[:2]
+    image_height, image_width = frame_image.shape[:2]
+
+    assigned_person_ids = set()
 
     # Detect faces using RetinaFace
     detected_faces = RetinaFace.detect_faces(
-        img_path=cv_image, threshold=FACE_DETECTION_THRESHOLD
+        img_path=frame_image, threshold=config["FACE_DETECTION_THRESHOLD"]
     )
 
+    # If no faces were detected
     if len(detected_faces) == 0:
-        cv_image_flipped = cv2.flip(src=cv_image, flipCode=0)
-        detected_faces_flipped = RetinaFace.detect_faces(
-            img_path=cv_image_flipped, threshold=FACE_DETECTION_THRESHOLD
+        # Flip the image vertically and check again for detection
+        flipped_frame_image = cv2.flip(src=frame_image, flipCode=0)
+        flipped_detected_faces = RetinaFace.detect_faces(
+            img_path=flipped_frame_image, threshold=config["FACE_DETECTION_THRESHOLD"]
         )
-        if len(detected_faces_flipped) > 0:
-            print(
-                f"\nFrame: {frame_number} - Detected faces [unfiltered flipped]: {detected_faces_flipped}"
-            )
+        # If faces were detected on the flipped image
+        if len(flipped_detected_faces) > 0:
 
-            for face_code, detected_face in list(detected_faces_flipped.items()):
-                # Unflipped facial_area
+            # Unflip all the detected faces correcting its features
+            for face_id, detected_face in flipped_detected_faces.items():
+                # facial_area
                 facial_area = detected_face["facial_area"]
                 y2 = image_height - facial_area[1]
                 y1 = image_height - facial_area[3]
                 facial_area[1] = y1
                 facial_area[3] = y2
-                # Unflipped right_eye
+                # right_eye
                 right_eye = detected_face["landmarks"]["left_eye"]
                 right_eye[1] = image_height - right_eye[1]
-                # Unflipped left_eye
+                # left_eye
                 left_eye = detected_face["landmarks"]["right_eye"]
                 left_eye[1] = image_height - left_eye[1]
-                # Unflipped nose
+                # nose
                 nose = detected_face["landmarks"]["nose"]
                 nose[1] = image_height - nose[1]
-                # Unflipped mouth_right
+                # mouth_right
                 mouth_right = detected_face["landmarks"]["mouth_left"]
                 mouth_right[1] = image_height - mouth_right[1]
-                # Unflipped mouth_left
+                # mouth_left
                 mouth_left = detected_face["landmarks"]["mouth_right"]
                 mouth_left[1] = image_height - mouth_left[1]
 
-                unflipped_face = {
+                # Assemble the unflipped face and add it to the detected faces
+                detected_faces[face_id] = {
                     "score": detected_face["score"],
                     "facial_area": facial_area,
                     "landmarks": {
@@ -314,22 +333,15 @@ def process_cv_image(
                     },
                 }
 
-                print(f"\nUnflipped face {face_code}: {unflipped_face}")
-
-                detected_faces[face_code] = unflipped_face
-
-    assigned_person_ids = set()
-
     # If faces were detected
     if len(detected_faces) > 0:
-        print(
-            f"\nFrame: {frame_number} - Detected faces [unfiltered]: {detected_faces}"
-        )
 
-        # Iterate through them
-        for face_code, detected_face in list(detected_faces.items()):
+        print(f"\nFrame: {frame_number} - Detected: {detected_faces}")
+
+        # Iterate over a snapshot of the detected_faces's items
+        for face_id, detected_face in list(detected_faces.items()):
             matched_person_id = None
-            max_iou = 0.0
+            max_facial_area_iou = 0.0
             min_landmark_distance = float("inf")
 
             for person in current_persons:
@@ -340,65 +352,45 @@ def process_cv_image(
 
                 # If this person's face data hasn't been updated yet
                 if person["facial_area"] is None:
-                    # Initialize variables to calculate average distance
-                    total_distance = 0
-                    valid_landmark_count = 0
 
-                    #
-                    for landmark, landmark_value in person["landmarks"].items():
-                        if landmark_value is not None:
-                            detected_point = np.array(
-                                detected_face["landmarks"][landmark]
-                            )
-                            known_point = np.array(landmark_value)
+                    avg_landmark_distance = calculate_avg_landmark_distance(
+                        person_landmarks=person["landmarks"],
+                        detected_landmarks=detected_face["landmarks"],
+                    )
 
-                            distance = np.linalg.norm(detected_point - known_point)
-
-                            total_distance += distance
-                            valid_landmark_count += 1
-
-                    if valid_landmark_count > 0:
-                        average_distance = total_distance / valid_landmark_count
-                        if average_distance < MAX_LANDMARK_DISTANCE:
+                    if avg_landmark_distance is not None:
+                        print(f"Average landmark distance: {avg_landmark_distance}")
+                        if avg_landmark_distance < config["MAX_LANDMARK_DISTANCE"]:
                             matched_person_id = person["id"]
                             break
                 else:
                     # Calculate IOU between the person's facial area and the detected facial area
-                    iou = calculate_iou(
+                    facial_area_iou = calculate_iou(
                         box1=person["facial_area"],
                         box2=detected_face["facial_area"],
                     )
-                    if iou > max_iou:
-                        max_iou = iou
+                    print(f"Facial area IoU: {facial_area_iou}")
+                    if facial_area_iou > max_facial_area_iou:
+                        max_facial_area_iou = facial_area_iou
                         matched_person_id = person["id"]
 
                         # Secondary check using landmarks to refine the match
                         if matched_person_id is not None:
-                            total_distance = 0
-                            valid_landmark_count = 0
 
-                            for landmark, landmark_value in person["landmarks"].items():
-                                if landmark_value is not None:
-                                    detected_point = np.array(
-                                        detected_face["landmarks"][landmark]
-                                    )
-                                    known_point = np.array(landmark_value)
+                            avg_landmark_distance = calculate_avg_landmark_distance(
+                                person_landmarks=person["landmarks"],
+                                detected_landmarks=detected_face["landmarks"],
+                            )
 
-                                    distance = np.linalg.norm(
-                                        detected_point - known_point
-                                    )
-
-                                    total_distance += distance
-                                    valid_landmark_count += 1
-
-                            if valid_landmark_count > 0:
-                                average_distance = total_distance / valid_landmark_count
+                            if avg_landmark_distance is not None:
                                 if (
-                                    average_distance < MAX_LANDMARK_DISTANCE
-                                    and average_distance < min_landmark_distance
+                                    avg_landmark_distance
+                                    < config["MAX_LANDMARK_DISTANCE"]
+                                    and avg_landmark_distance < min_landmark_distance
                                 ):
-                                    min_landmark_distance = average_distance
+                                    min_landmark_distance = avg_landmark_distance
                                 else:
+                                    print(f"Didn't pass avg landmark distance check")
                                     matched_person_id = None
 
             if matched_person_id is not None:
@@ -414,20 +406,28 @@ def process_cv_image(
                     elif y > image_height:
                         detected_face["facial_area"][3] = image_height  # Replace y_max
 
+                # Remove the 1 pixel gap between the facial_area and the frame border introduced by RetinaFace
+                if detected_face["facial_area"][0] == 1:
+                    detected_face["facial_area"][0] = 0  # Replace x_min
+                if detected_face["facial_area"][1] == 1:
+                    detected_face["facial_area"][1] = 0  # Replace y_min
+                if detected_face["facial_area"][2] == image_width - 1:
+                    detected_face["facial_area"][2] = image_width  # Replace x_max
+                if detected_face["facial_area"][3] == image_height - 1:
+                    detected_face["facial_area"][3] = image_height  # Replace y_max
+
                 # Save the person's id in the face dict
                 detected_face["person_id"] = matched_person_id
 
                 # Add the matched person's id to the assigned set
                 assigned_person_ids.add(matched_person_id)
             else:
+                print(f"Removed: {detected_faces[face_id]}")
                 # Remove the detected face if no good person match is found
-                del detected_faces[face_code]
+                del detected_faces[face_id]
 
         # If not all detected faces were deleted
         if len(detected_faces) > 0:
-            print(
-                f"Frame: {frame_number} - Detected faces [filtered]: {detected_faces}"
-            )
 
             # Update the face data of the persons present in the segment
             update_persons(
@@ -446,7 +446,7 @@ def process_cv_image(
 
             if current_persons[person_id]["facial_area"] is not None:
                 detected_faces[f"previous_{index}"] = {
-                    "score": MAX_CONFIDENCE_SCORE,
+                    "score": config["MAX_CONFIDENCE_SCORE"],
                     "facial_area": current_persons[person_id]["facial_area"],
                     "landmarks": current_persons[person_id]["landmarks"],
                     "person_id": person_id,
@@ -458,8 +458,8 @@ def process_cv_image(
             x1, y1, x2, y2 = detected_face["facial_area"]
 
             # Blur the detected face region
-            cv_image[y1:y2, x1:x2] = cv2.GaussianBlur(
-                src=cv_image[y1:y2, x1:x2], ksize=(51, 51), sigmaX=30
+            frame_image[y1:y2, x1:x2] = cv2.GaussianBlur(
+                src=frame_image[y1:y2, x1:x2], ksize=(51, 51), sigmaX=30
             )
 
             # Print the person id in bold and white font
@@ -472,7 +472,7 @@ def process_cv_image(
             text_x = x1 + (x2 - x1 - text_size[0]) // 2
             text_y = y1 + (y2 - y1 + text_size[1]) // 2
             cv2.putText(
-                img=cv_image,
+                img=frame_image,
                 text=f"{person_id}",
                 org=(text_x, text_y),
                 fontFace=font,
@@ -482,14 +482,16 @@ def process_cv_image(
                 lineType=cv2.LINE_AA,
             )
 
-    cv_image = cv2.cvtColor(src=cv_image, code=cv2.COLOR_BGR2RGB)
+    frame_image = cv2.cvtColor(src=frame_image, code=cv2.COLOR_BGR2RGB)
 
-    return cv_image
+    return frame_image
 
 
-def initialize_persons(current_persons: List[dict], known_persons: List[dict]) -> None:
+def initialize_persons(
+    current_persons: List[dict], known_persons: List[dict], ignore_staff: bool
+) -> None:
     for index, person in enumerate(known_persons):
-        if IGNORE_STAFF and person["type"] == "STAFF":
+        if ignore_staff and person["type"] == "STAFF":
             continue
 
         current_persons.append(
@@ -541,7 +543,28 @@ def update_persons(current_persons, headcount_change=None, detected_faces=None):
 
 
 def main():
-    input_bag_path = Path(get_file_path(BAG_FILE_TYPE))
+
+    # Load config
+    with open("config.yaml", "r") as config_file:
+        config = yaml.safe_load(config_file)
+
+    input_bag_path = get_file_path(file_type=BAG_FILE_TYPE)
+
+    input_bag_name = input_bag_path.name
+
+    dataset_metadata_path = get_file_path(file_type=EXCEL_FILE_TYPE)
+    dataset_metadata_df = pd.read_excel(
+        io=dataset_metadata_path, sheet_name=0, header=3
+    )
+
+    input_bag_metadata = dataset_metadata_df[
+        dataset_metadata_df.iloc[:, 6] == input_bag_name  # Column "G"
+    ]
+
+    recognizable_persons_cell = input_bag_metadata.iloc[:, 34].values[0]  # Column "AI"
+    recognizable_persons = None
+    if not pd.isna(recognizable_persons_cell):
+        recognizable_persons = json.loads(recognizable_persons_cell)
 
     # Get the current timestamp and format it
     run_timestamp = datetime.now().strftime(format="%Y%m%dT%H%M%S")
@@ -614,19 +637,19 @@ def main():
     headcount_changes = []  # List of the headcount changes during the whole stream
     headcount_segments = []  # Color stream segmented by headcount changes
 
-    if RECOGNIZABLE_PERSONS_CELL != "":
-        recognizable_persons = json.loads(RECOGNIZABLE_PERSONS_CELL)
+    if recognizable_persons is not None:
 
         # Initialize the list of persons
         initialize_persons(
             current_persons=current_persons,
             known_persons=recognizable_persons,
+            ignore_staff=config["IGNORE_STAFF"],
         )
 
         # Populate the headcount changes list
         for index, person in enumerate(recognizable_persons):
             # Skip considering the appearances of the hospital staff if requested
-            if IGNORE_STAFF and person["type"] == "STAFF":
+            if config["IGNORE_STAFF"] and person["type"] == "STAFF":
                 continue
 
             # Add a headcount change for each endpoint of the frame interval
@@ -687,7 +710,7 @@ def main():
     headcount_segment_index = None
     current_headcount_segment = None
     bridge = None
-    if RECOGNIZABLE_PERSONS_CELL != "":
+    if recognizable_persons is not None:
         # Initialize the stream segment
         headcount_segment_index = 0
         current_headcount_segment = headcount_segments[headcount_segment_index]
@@ -697,13 +720,17 @@ def main():
 
     # Color stream variables
     color_msg_counter = 0
-    undesired_intervals = get_undesired_intervals()
+    undesired_intervals = get_undesired_intervals(
+        bag_metadata=input_bag_metadata, config=config
+    )
     desired_intervals = get_desired_intervals(
         undesired_intervals=undesired_intervals,
         first_frame_number=first_frame_number,
         last_frame_number=last_frame_number,
         fps=color_fps,
+        min_output_duration=config["MIN_OUTPUT_DURATION"],
     )
+
     writing_desired_frames = False
     clip_start_time = None
 
@@ -735,7 +762,9 @@ def main():
                     flush=True,
                 )
 
-                if RECOGNIZABLE_PERSONS_CELL != "":
+                processed_cv_image = None
+
+                if recognizable_persons is not None:
                     # Update the current segment of the stream
                     if frame_number > current_headcount_segment["end_frame"]:
                         headcount_segment_index += 1
@@ -752,48 +781,49 @@ def main():
                                 headcount_change=headcount_change,
                             )
 
+                    # Only process the current message if persons appear in the stream segment
+                    if len(current_headcount_segment["headcount"]) != 0:
+                        # Convert the ROS Image message to an OpenCV image
+                        cv_image = bridge.imgmsg_to_cv2(
+                            img_msg=deserialized_bytes,
+                            desired_encoding="bgr8",
+                        )
+
+                        # Process the image using OpenCV
+                        processed_cv_image = process_frame(
+                            frame_image=cv_image,
+                            current_segment=current_headcount_segment,
+                            current_persons=current_persons,
+                            frame_number=frame_number,
+                            config=config,
+                        )
+
                 # If the current color frame is part of a desired interval
                 if is_frame_in_intervals(frame_number, desired_intervals):
 
-                    if RECOGNIZABLE_PERSONS_CELL != "":
-                        # Only process the current message if persons appear in the stream segment
-                        if len(current_headcount_segment["headcount"]) != 0:
-                            # Convert the ROS Image message to an OpenCV image
-                            cv_image = bridge.imgmsg_to_cv2(
-                                img_msg=deserialized_bytes,
-                                desired_encoding="bgr8",
-                            )
+                    if recognizable_persons is not None:
+                        # Convert the OpenCV image back to a ROS Image message
+                        processed_ros_image = bridge.cv2_to_imgmsg(
+                            cvim=processed_cv_image,
+                            encoding="rgb8",
+                        )
 
-                            # Process the image using OpenCV
-                            processed_cv_image = process_cv_image(
-                                cv_image=cv_image,
-                                current_segment=current_headcount_segment,
-                                current_persons=current_persons,
-                                frame_number=frame_number,
-                            )
+                        # Restore the message header values. Skip restoring the frame_id to prevent issues with newer SDK versions
+                        processed_ros_image.header.seq = frame_number
+                        processed_ros_image.header.stamp = frame_timestamp
 
-                            # Convert the OpenCV image back to a ROS Image message
-                            processed_ros_image = bridge.cv2_to_imgmsg(
-                                cvim=processed_cv_image,
-                                encoding="rgb8",
-                            )
+                        # Serialize the processed Image message
+                        buffer = io.BytesIO()
+                        processed_ros_image.serialize(buffer)
 
-                            # Restore the message header values. Skip restoring the frame_id to prevent issues with newer SDK versions
-                            processed_ros_image.header.seq = frame_number
-                            processed_ros_image.header.stamp = frame_timestamp
+                        # Turn the original message tuple into a list to allow component editing
+                        msg_raw_components = list(msg_raw)
 
-                            # Serialize the processed Image message
-                            buffer = io.BytesIO()
-                            processed_ros_image.serialize(buffer)
+                        # Replace the original serialized bytes with the processed ones
+                        msg_raw_components[1] = buffer.getvalue()
 
-                            # Turn the original message tuple into a list to allow component editing
-                            msg_raw_components = list(msg_raw)
-
-                            # Replace the original serialized bytes with the processed ones
-                            msg_raw_components[1] = buffer.getvalue()
-
-                            # Turn the list back into a tuple
-                            msg_raw = tuple(msg_raw_components)
+                        # Turn the list back into a tuple
+                        msg_raw = tuple(msg_raw_components)
 
                     # If a clip isn't being written
                     if not writing_desired_frames:
@@ -826,7 +856,7 @@ def main():
 
                         # Close the current output bag clip
                         output_bag.close()
-                        print(f"\nClosed bag file: {current_output_bag_path}")
+                        print(f"\nClosed bag file: {current_output_bag_path}\n")
 
                         # Prepare the variables for the next clip
                         current_output_bag_clip += 1
@@ -850,14 +880,14 @@ def main():
         if writing_desired_frames:
             # Close the current output bag clip
             output_bag.close()
-            print(f"\nClosed bag file: {current_output_bag_path}")
+            print(f"\nClosed bag file: {current_output_bag_path}\n")
 
     input_bag.close()
     print(f"\nProcessing complete.\nEdited bag files saved in: {output_directory_path}")
 
     end_time = time.time()
     duration = (end_time - start_time) / 60
-    print(f"Time: {format(round(duration, 3))} minutes")
+    print(f"\nTime: {format(round(duration, 3))} minutes")
 
 
 if __name__ == "__main__":
