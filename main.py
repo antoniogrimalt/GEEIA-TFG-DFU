@@ -58,17 +58,17 @@ def combine_undesired_intervals(intervals: List[dict]) -> List[dict]:
 
 def get_undesired_intervals(bag_metadata: pd.DataFrame, config: dict) -> List[dict]:
 
-    wound_visibility_partial = bag_metadata.iloc[:, 29].values[0]  # Column "AD"
-    wound_visibility_none = bag_metadata.iloc[:, 30].values[0]  # Column "AE"
-    wound_blurry = bag_metadata.iloc[:, 31].values[0]  # Column "AF"
-    wound_covered = bag_metadata.iloc[:, 32].values[0]  # Column "AG"
-    wound_near_face = bag_metadata.iloc[:, 33].values[0]  # Column "AH"
+    wound_partially_out = bag_metadata["wound_partially_out"].values[0]
+    wound_fully_out = bag_metadata["wound_fully_out"].values[0]
+    wound_blurry = bag_metadata["wound_blurry"].values[0]
+    wound_covered = bag_metadata["wound_covered"].values[0]
+    wound_near_face = bag_metadata["wound_near_face"].values[0]
 
     undesired_intervals = []
 
     # Add intervals where wound visibility is partial based on tolerance
-    if not pd.isna(wound_visibility_partial):
-        partial_intervals = json.loads(wound_visibility_partial)
+    if not pd.isna(wound_partially_out):
+        partial_intervals = json.loads(wound_partially_out)
 
         if not config["KEEP_WOUND_PARTIALLY_OUT"]:
             filtered_intervals = partial_intervals
@@ -86,15 +86,13 @@ def get_undesired_intervals(bag_metadata: pd.DataFrame, config: dict) -> List[di
         undesired_intervals += filtered_intervals
 
     # Add intervals where wound visibility is none
-    if (not config["KEEP_WOUND_COMPLETELY_OUT"]) and (
-        not pd.isna(wound_visibility_none)
-    ):
-        undesired_intervals += json.loads(wound_visibility_none)
+    if (not config["KEEP_WOUND_FULLY_OUT"]) and (not pd.isna(wound_fully_out)):
+        undesired_intervals += json.loads(wound_fully_out)
 
-    if (not config["KEEP_BLURRY_WOUND"]) and (not pd.isna(wound_blurry)):
+    if (not config["KEEP_WOUND_BLURRY"]) and (not pd.isna(wound_blurry)):
         undesired_intervals += json.loads(wound_blurry)
 
-    if (not config["KEEP_COVERED_WOUND"]) and (not pd.isna(wound_covered)):
+    if (not config["KEEP_WOUND_COVERED"]) and (not pd.isna(wound_covered)):
         undesired_intervals += json.loads(wound_covered)
 
     if (not config["KEEP_WOUND_NEAR_FACE"]) and (not pd.isna(wound_near_face)):
@@ -543,19 +541,16 @@ def main():
         config = yaml.safe_load(config_file)
 
     input_bag_path = get_file_path(file_type=BAG_FILE_TYPE)
-
     input_bag_name = input_bag_path.name
 
-    dataset_metadata_path = get_file_path(file_type=EXCEL_FILE_TYPE)
-    dataset_metadata_df = pd.read_excel(
-        io=dataset_metadata_path, sheet_name=0, header=3
-    )
+    with pd.ExcelFile("dataset_metadata.xlsx") as xlsx:
+        dataset_metadata_df = pd.read_excel(io=xlsx)
 
     input_bag_metadata = dataset_metadata_df[
-        dataset_metadata_df.iloc[:, 6] == input_bag_name  # Column "G"
+        dataset_metadata_df["bag_filename"] == input_bag_name
     ]
 
-    person_appearances_cell = input_bag_metadata.iloc[:, 34].values[0]  # Column "AI"
+    person_appearances_cell = input_bag_metadata["person_appearances"].values[0]
     person_appearances = None
     if not pd.isna(person_appearances_cell):
         person_appearances = json.loads(person_appearances_cell)
