@@ -336,8 +336,6 @@ def process_frame(
     # If faces were detected
     if len(detected_faces) > 0:
 
-        print(f"\nFrame: {frame_number} - Detected: {detected_faces}")
-
         # Iterate over a snapshot of the detected_faces's items
         for face_id, detected_face in list(detected_faces.items()):
             matched_person_id = None
@@ -359,7 +357,6 @@ def process_frame(
                     )
 
                     if avg_landmark_distance is not None:
-                        print(f"Average landmark distance: {avg_landmark_distance}")
                         if avg_landmark_distance < config["MAX_LANDMARK_DISTANCE"]:
                             matched_person_id = person["id"]
                             break
@@ -369,7 +366,7 @@ def process_frame(
                         box1=person["facial_area"],
                         box2=detected_face["facial_area"],
                     )
-                    print(f"Facial area IoU: {facial_area_iou}")
+
                     if facial_area_iou > max_facial_area_iou:
                         max_facial_area_iou = facial_area_iou
                         matched_person_id = person["id"]
@@ -390,7 +387,6 @@ def process_frame(
                                 ):
                                     min_landmark_distance = avg_landmark_distance
                                 else:
-                                    print(f"Didn't pass avg landmark distance check")
                                     matched_person_id = None
 
             if matched_person_id is not None:
@@ -422,7 +418,6 @@ def process_frame(
                 # Add the matched person's id to the assigned set
                 assigned_person_ids.add(matched_person_id)
             else:
-                print(f"Removed: {detected_faces[face_id]}")
                 # Remove the detected face if no good person match is found
                 del detected_faces[face_id]
 
@@ -631,95 +626,6 @@ def main():
             # Remember the last frame number
             last_frame_number = msg.header.seq
 
-    # FACES
-    current_persons = []  # Updated data of the persons showing up in the color stream
-
-    headcount_changes = []  # List of the headcount changes during the whole stream
-    headcount_segments = []  # Color stream segmented by headcount changes
-
-    if recognizable_persons is not None:
-
-        # Initialize the list of persons
-        initialize_persons(
-            current_persons=current_persons,
-            known_persons=recognizable_persons,
-            ignore_staff=config["IGNORE_STAFF"],
-        )
-
-        # Populate the headcount changes list
-        for index, person in enumerate(recognizable_persons):
-            # Skip considering the appearances of the hospital staff if requested
-            if config["IGNORE_STAFF"] and person["type"] == "STAFF":
-                continue
-
-            # Add a headcount change for each endpoint of the frame interval
-            for appearance in person["appearances"]:
-                headcount_changes.append(
-                    {
-                        "frame": appearance["start"]["frame"],
-                        "type": "enters",
-                        "person": {
-                            "id": index,
-                            "landmarks": appearance["start"]["landmarks"],
-                        },
-                    }
-                )
-                headcount_changes.append(
-                    {
-                        "frame": appearance["end"]["frame"] + 1,
-                        "type": "leaves",
-                        "person": {
-                            "id": index,
-                        },
-                    }
-                )
-        # Sort the headcount changes by frame number
-        headcount_changes.sort(key=lambda endpoint: endpoint["frame"])
-
-        # Define the segments of the color stream
-        # Initialize variables
-        current_frame_number = first_frame_number  # Current color stream frame number
-        current_headcount = set()  # Indexes of the persons in the current segment
-
-        # Process the headcount changes to segment the color stream
-        for headcount_change in headcount_changes:
-            if current_frame_number < headcount_change["frame"]:
-                headcount_segments.append(
-                    {
-                        "start_frame": current_frame_number,
-                        "end_frame": headcount_change["frame"] - 1,
-                        "headcount": sorted(current_headcount),
-                    }
-                )
-                current_frame_number = headcount_change["frame"]
-            if headcount_change["type"] == "enters":
-                current_headcount.add(headcount_change["person"]["id"])
-            elif headcount_change["type"] == "leaves":
-                current_headcount.remove(headcount_change["person"]["id"])
-        # Add the final segment if there are frames left
-        if current_frame_number <= last_frame_number:
-            headcount_segments.append(
-                {
-                    "start_frame": current_frame_number,
-                    "end_frame": last_frame_number,
-                    "headcount": sorted(current_headcount),
-                }
-            )
-
-    # Stream segmentation by headcount
-    headcount_segment_index = None
-    current_headcount_segment = None
-    bridge = None
-    if recognizable_persons is not None:
-        # Initialize the stream segment
-        headcount_segment_index = 0
-        current_headcount_segment = headcount_segments[headcount_segment_index]
-
-        # Initialize the CvBridge
-        bridge = CvBridge()
-
-    # Color stream variables
-    color_msg_counter = 0
     undesired_intervals = get_undesired_intervals(
         bag_metadata=input_bag_metadata, config=config
     )
@@ -730,18 +636,109 @@ def main():
         fps=color_fps,
         min_output_duration=config["MIN_OUTPUT_DURATION"],
     )
-
-    writing_desired_frames = False
-    clip_start_time = None
+    print(f"\nUndesired intervals: {undesired_intervals}")
+    print(f"Desired intervals: {desired_intervals}\n")
 
     if len(desired_intervals) > 0:
 
-        current_output_bag_clip = 0
+        # Color stream
+        current_persons = []  # Updated data of the persons appearing
+        headcount_changes = []  # List of the headcount changes during the stream
+        headcount_segments = []  # Stream segmented by headcount changes
+
+        if recognizable_persons is not None:
+
+            # Initialize the list of persons
+            initialize_persons(
+                current_persons=current_persons,
+                known_persons=recognizable_persons,
+                ignore_staff=config["IGNORE_STAFF"],
+            )
+
+            # Populate the headcount changes list
+            for index, person in enumerate(recognizable_persons):
+                # Skip considering the appearances of the hospital staff if requested
+                if config["IGNORE_STAFF"] and person["type"] == "STAFF":
+                    continue
+
+                # Add a headcount change for each endpoint of the frame interval
+                for appearance in person["appearances"]:
+                    headcount_changes.append(
+                        {
+                            "frame": appearance["start"]["frame"],
+                            "type": "enters",
+                            "person": {
+                                "id": index,
+                                "landmarks": appearance["start"]["landmarks"],
+                            },
+                        }
+                    )
+                    headcount_changes.append(
+                        {
+                            "frame": appearance["end"]["frame"] + 1,
+                            "type": "leaves",
+                            "person": {
+                                "id": index,
+                            },
+                        }
+                    )
+            # Sort the headcount changes by frame number
+            headcount_changes.sort(key=lambda endpoint: endpoint["frame"])
+
+            # Define the segments of the color stream
+            # Initialize variables
+            current_frame_number = (
+                first_frame_number  # Current color stream frame number
+            )
+            current_headcount = set()  # Indexes of the persons in the current segment
+
+            # Process the headcount changes to segment the color stream
+            for headcount_change in headcount_changes:
+                if current_frame_number < headcount_change["frame"]:
+                    headcount_segments.append(
+                        {
+                            "start_frame": current_frame_number,
+                            "end_frame": headcount_change["frame"] - 1,
+                            "headcount": sorted(current_headcount),
+                        }
+                    )
+                    current_frame_number = headcount_change["frame"]
+                if headcount_change["type"] == "enters":
+                    current_headcount.add(headcount_change["person"]["id"])
+                elif headcount_change["type"] == "leaves":
+                    current_headcount.remove(headcount_change["person"]["id"])
+            # Add the final segment if there are frames left
+            if current_frame_number <= last_frame_number:
+                headcount_segments.append(
+                    {
+                        "start_frame": current_frame_number,
+                        "end_frame": last_frame_number,
+                        "headcount": sorted(current_headcount),
+                    }
+                )
+
+        # Stream segmentation by headcount
+        headcount_segment_index = None
+        current_headcount_segment = None
+        bridge = None
+        if recognizable_persons is not None:
+            # Initialize the stream segment
+            headcount_segment_index = 0
+            current_headcount_segment = headcount_segments[headcount_segment_index]
+
+            # Initialize the CvBridge
+            bridge = CvBridge()
+
+        color_msg_counter = 0
+        writing_desired_frames = False
+        task_finished = False
+        clip_start_time = None
+        written_intervals = 0
         output_bag, current_output_bag_path = None, None
 
         for topic, msg_raw, t in input_bag.read_messages(raw=True):
 
-            if color_data_topic in topic:
+            if (not task_finished) and (color_data_topic in topic):
 
                 # Unpack the message tuple
                 msg_type, serialized_bytes, md5sum, pos, pytype = msg_raw
@@ -789,7 +786,7 @@ def main():
                             desired_encoding="bgr8",
                         )
 
-                        # Process the image using OpenCV
+                        # Process the image to keep track of the persons appearing and blur their faces
                         processed_cv_image = process_frame(
                             frame_image=cv_image,
                             current_segment=current_headcount_segment,
@@ -834,7 +831,7 @@ def main():
                         output_bag, current_output_bag_path = create_output_bag(
                             input_bag_path=input_bag_path,
                             run_timestamp=run_timestamp,
-                            output_bag_clip=current_output_bag_clip,
+                            output_bag_clip=written_intervals,
                             output_directory_path=output_directory_path,
                         )
                         print(f"\nCreated bag file: {current_output_bag_path}")
@@ -847,6 +844,9 @@ def main():
                                 topic=rs_topic, msg=rs_msg, t=rs_t, raw=True
                             )
 
+                        # Add to the count of written intervals
+                        written_intervals += 1
+
                 # If the current color frame isn't part of a desired interval
                 else:
                     # and a clip was being written
@@ -858,8 +858,11 @@ def main():
                         output_bag.close()
                         print(f"\nClosed bag file: {current_output_bag_path}\n")
 
-                        # Prepare the variables for the next clip
-                        current_output_bag_clip += 1
+                        # If all the desired intervals were written the task is finished
+                        if written_intervals == len(desired_intervals):
+                            task_finished = True
+
+                        # Reset for the next clip
                         clip_start_time = None
 
             # If a clip is being written
