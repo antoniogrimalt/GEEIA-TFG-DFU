@@ -387,27 +387,13 @@ def process_frame(
                                     matched_person_id = None
 
             if matched_person_id is not None:
-                # Ensure the facial area touches the frame border if needed
-                for landmark in detected_face["landmarks"].values():
-                    x, y = landmark
-                    if x < 0:
-                        detected_face["facial_area"][0] = 0  # Replace x_min
-                    elif x > image_width:
-                        detected_face["facial_area"][2] = image_width  # Replace x_max
-                    if y < 0:
-                        detected_face["facial_area"][1] = 0  # Replace y_min
-                    elif y > image_height:
-                        detected_face["facial_area"][3] = image_height  # Replace y_max
 
-                # Remove the 1 pixel gap between the facial_area and the frame border introduced by RetinaFace
-                if detected_face["facial_area"][0] == 1:
-                    detected_face["facial_area"][0] = 0  # Replace x_min
-                if detected_face["facial_area"][1] == 1:
-                    detected_face["facial_area"][1] = 0  # Replace y_min
-                if detected_face["facial_area"][2] == image_width - 1:
-                    detected_face["facial_area"][2] = image_width  # Replace x_max
-                if detected_face["facial_area"][3] == image_height - 1:
-                    detected_face["facial_area"][3] = image_height  # Replace y_max
+                # Remove the pixel gap between the facial_area and the frame border introduced by RetinaFace
+                remove_pixel_gap(
+                    detected_face=detected_face,
+                    frame_width=image_width,
+                    frame_height=image_height,
+                )
 
                 # Save the person's id in the face dict
                 detected_face["person_id"] = matched_person_id
@@ -477,6 +463,29 @@ def process_frame(
     frame_image = cv2.cvtColor(src=frame_image, code=cv2.COLOR_BGR2RGB)
 
     return frame_image
+
+
+def remove_pixel_gap(detected_face: dict, frame_width: int, frame_height: int) -> None:
+    # Ensure the facial area touches the frame border
+    for landmark in detected_face["landmarks"].values():
+        x, y = landmark
+        if x < 0:
+            detected_face["facial_area"][0] = 0
+        elif x > frame_width:
+            detected_face["facial_area"][2] = frame_width
+        if y < 0:
+            detected_face["facial_area"][1] = 0
+        elif y > frame_height:
+            detected_face["facial_area"][3] = frame_height
+
+    if detected_face["facial_area"][0] == 1:
+        detected_face["facial_area"][0] = 0
+    if detected_face["facial_area"][1] == 1:
+        detected_face["facial_area"][1] = 0
+    if detected_face["facial_area"][2] == frame_width - 1:
+        detected_face["facial_area"][2] = frame_width
+    if detected_face["facial_area"][3] == frame_height - 1:
+        detected_face["facial_area"][3] = frame_height
 
 
 def initialize_tracked_persons(
@@ -881,7 +890,7 @@ def main():
             print(f"\nClosed bag file: {current_output_bag_path}\n")
 
     input_bag.close()
-    print(f"\nProcessing complete.\nEdited bag files saved in: {output_directory_path}")
+    print(f"Processing complete.\nEdited bag files saved in: {output_directory_path}")
 
     end_time = time.time()
     duration = (end_time - start_time) / 60
