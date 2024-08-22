@@ -1,20 +1,22 @@
-import tkinter
-from tkinter import filedialog
-from pathlib import Path
-from datetime import datetime
-from typing import Tuple, List, Dict, Optional
-from sensor_msgs.msg import Image
-import rosbag
-import cv2
-from cv_bridge import CvBridge
-from retinaface import RetinaFace
-import time
-import json, yaml
-import numpy as np
-from genpy import Time
 import io
-import pandas as pd
+import json
+import time
+import tkinter
+import yaml
+from datetime import datetime
+from pathlib import Path
+from tkinter import filedialog
+from typing import Tuple, List, Dict, Optional
 
+import cv2
+import numpy as np
+import pandas as pd
+import rosbag
+from genpy import Time
+from retinaface import RetinaFace
+from sensor_msgs.msg import Image
+
+from cv_bridge import CvBridge
 
 BAG_INITIALIZATION_TIME = Time(nsecs=1)  # Publish time of RealSense metadata
 BAG_SENSORS_START_TIME = Time(nsecs=20000)  # Publish start time of sensors
