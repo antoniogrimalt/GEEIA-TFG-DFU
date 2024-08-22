@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
 from typing import Tuple, List, Dict, Optional
-
 import cv2
 import numpy as np
 import pandas as pd
@@ -15,7 +14,6 @@ import rosbag
 from genpy import Time
 from retinaface import RetinaFace
 from sensor_msgs.msg import Image
-
 from cv_bridge import CvBridge
 
 BAG_INITIALIZATION_TIME = Time(nsecs=1)  # Publish time of RealSense metadata
