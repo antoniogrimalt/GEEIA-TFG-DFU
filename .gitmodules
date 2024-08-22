@@ -10,3 +10,7 @@
 	path = roslz4/ros_comm
 	url = https://github.com/ros/ros_comm.git
 	branch = noetic-devel
+[submodule "roslz4/roscpp_core"]
+	path = roslz4/roscpp_core
+	url = https://github.com/ros/roscpp_core.git
+	branch = noetic-devel
