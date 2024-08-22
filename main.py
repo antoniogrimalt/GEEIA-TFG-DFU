@@ -15,18 +15,13 @@ from genpy import Time
 import io
 import pandas as pd
 
-# Default publish time for the RealSense headers
-BAG_INITIALIZATION_TIME = Time(nsecs=1)
 
-BAG_SENSORS_START_TIME = Time(nsecs=20000)
-
-# File types
-BAG_FILE_TYPE = ("BAG File", "*.bag")
-EXCEL_FILE_TYPE = ("Excel Workbook", "*.xlsx *.xlsm *.xlsb *.xls")
-JSON_FILE_TYPE = ("JSON File", "*.json")
+BAG_INITIALIZATION_TIME = Time(nsecs=1)  # Publish time of RealSense metadata
+BAG_SENSORS_START_TIME = Time(nsecs=20000)  # Publish start time of sensors
 
 
 def combine_undesired_intervals(intervals: List[dict]) -> List[dict]:
+
     if not intervals:
         return []
 
@@ -38,11 +33,6 @@ def combine_undesired_intervals(intervals: List[dict]) -> List[dict]:
     for current_interval in intervals[1:]:
         last_interval = combined_intervals[-1]
 
-        """
-        There could be dropped frames between two undesired intervals and the adjacent check (+1) could fail.
-        We need to check if the frames in between are desired, and then if these are enough to make a clip,
-        if not, discard them as undesired
-        """
         # If the current interval overlaps or is adjacent to the last one, merge them
         if (current_interval["start_frame"] < last_interval["end_frame"]) or (
             current_interval["start_frame"] == last_interval["end_frame"] + 1
@@ -109,6 +99,7 @@ def get_desired_intervals(
     fps: int,
     min_output_duration: int,
 ) -> List[dict]:
+
     desired_intervals = []
 
     # Initialize the start frame for the first desired interval
@@ -149,6 +140,7 @@ def get_desired_intervals(
 
 
 def is_frame_in_intervals(frame: int, intervals: List[dict]) -> bool:
+
     for interval in intervals:
         if interval["start_frame"] <= frame <= interval["end_frame"]:
             return True
@@ -179,6 +171,7 @@ def create_output_bag(
 
 
 def get_file_path(file_type: Tuple[str, str]) -> Path:
+
     main_window = tkinter.Tk()
     main_window.withdraw()  # Hide the main window
 
@@ -233,7 +226,8 @@ def calculate_iou(box1: List[int], box2: List[int]) -> float:
 
 
 def calculate_avg_landmark_distance(
-    person_landmarks: Dict[str, List[float]], detected_landmarks: Dict[str, List[float]]
+    person_landmarks: Dict[str, List[float]],
+    detected_landmarks: Dict[str, List[float]],
 ) -> Optional[float]:
     """
     Calculate the average distance between corresponding landmarks of a person and a detected face.
@@ -268,27 +262,30 @@ def calculate_avg_landmark_distance(
         return None
 
 
-def process_frame(
-    frame_image: np.ndarray,
+def analyze_and_anonymize_frame(
+    frame: np.ndarray,
     headcount_segment: dict,
     tracked_persons: List[dict],
     config: dict,
 ) -> np.ndarray:
-    image_height, image_width = frame_image.shape[:2]
+
+    frame_height, frame_width = frame.shape[:2]
 
     assigned_person_ids = set()
 
     # Detect faces using RetinaFace
     detected_faces = RetinaFace.detect_faces(
-        img_path=frame_image, threshold=config["FACE_DETECTION_THRESHOLD"]
+        img_path=frame,
+        threshold=config["FACE_DETECTION_THRESHOLD"],
     )
 
     # If no faces were detected
     if len(detected_faces) == 0:
         # Flip the image vertically and check again for detection
-        flipped_frame_image = cv2.flip(src=frame_image, flipCode=0)
+        flipped_frame = cv2.flip(src=frame, flipCode=0)
         flipped_detected_faces = RetinaFace.detect_faces(
-            img_path=flipped_frame_image, threshold=config["FACE_DETECTION_THRESHOLD"]
+            img_path=flipped_frame,
+            threshold=config["FACE_DETECTION_THRESHOLD"],
         )
         # If faces were detected on the flipped image
         if len(flipped_detected_faces) > 0:
@@ -297,25 +294,25 @@ def process_frame(
             for face_id, detected_face in flipped_detected_faces.items():
                 # facial_area
                 facial_area = detected_face["facial_area"]
-                y2 = image_height - facial_area[1]
-                y1 = image_height - facial_area[3]
+                y2 = frame_height - facial_area[1]
+                y1 = frame_height - facial_area[3]
                 facial_area[1] = y1
                 facial_area[3] = y2
                 # right_eye
                 right_eye = detected_face["landmarks"]["left_eye"]
-                right_eye[1] = image_height - right_eye[1]
+                right_eye[1] = frame_height - right_eye[1]
                 # left_eye
                 left_eye = detected_face["landmarks"]["right_eye"]
-                left_eye[1] = image_height - left_eye[1]
+                left_eye[1] = frame_height - left_eye[1]
                 # nose
                 nose = detected_face["landmarks"]["nose"]
-                nose[1] = image_height - nose[1]
+                nose[1] = frame_height - nose[1]
                 # mouth_right
                 mouth_right = detected_face["landmarks"]["mouth_left"]
-                mouth_right[1] = image_height - mouth_right[1]
+                mouth_right[1] = frame_height - mouth_right[1]
                 # mouth_left
                 mouth_left = detected_face["landmarks"]["mouth_right"]
-                mouth_left[1] = image_height - mouth_left[1]
+                mouth_left[1] = frame_height - mouth_left[1]
 
                 # Assemble the unflipped face and add it to the detected faces
                 detected_faces[face_id] = {
@@ -391,8 +388,8 @@ def process_frame(
                 # Remove the pixel gap between the facial_area and the frame border introduced by RetinaFace
                 remove_pixel_gap(
                     detected_face=detected_face,
-                    frame_width=image_width,
-                    frame_height=image_height,
+                    frame_width=frame_width,
+                    frame_height=frame_height,
                 )
 
                 # Save the person's id in the face dict
@@ -408,7 +405,7 @@ def process_frame(
         if len(detected_faces) > 0:
 
             # Update the face data of the persons present in the segment
-            update_persons(
+            update_tracked_persons(
                 tracked_persons=tracked_persons,
                 detected_faces=detected_faces,
             )
@@ -436,8 +433,10 @@ def process_frame(
             x1, y1, x2, y2 = detected_face["facial_area"]
 
             # Blur the detected face region
-            frame_image[y1:y2, x1:x2] = cv2.GaussianBlur(
-                src=frame_image[y1:y2, x1:x2], ksize=(51, 51), sigmaX=30
+            frame[y1:y2, x1:x2] = cv2.GaussianBlur(
+                src=frame[y1:y2, x1:x2],
+                ksize=(51, 51),
+                sigmaX=30,
             )
 
             # Print the person id in bold and white font
@@ -450,7 +449,7 @@ def process_frame(
             text_x = x1 + (x2 - x1 - text_size[0]) // 2
             text_y = y1 + (y2 - y1 + text_size[1]) // 2
             cv2.putText(
-                img=frame_image,
+                img=frame,
                 text=f"{person_id}",
                 org=(text_x, text_y),
                 fontFace=font,
@@ -460,9 +459,9 @@ def process_frame(
                 lineType=cv2.LINE_AA,
             )
 
-    frame_image = cv2.cvtColor(src=frame_image, code=cv2.COLOR_BGR2RGB)
+    frame = cv2.cvtColor(src=frame, code=cv2.COLOR_BGR2RGB)
 
-    return frame_image
+    return frame
 
 
 def remove_pixel_gap(detected_face: dict, frame_width: int, frame_height: int) -> None:
@@ -489,8 +488,11 @@ def remove_pixel_gap(detected_face: dict, frame_width: int, frame_height: int) -
 
 
 def initialize_tracked_persons(
-    tracked_persons: List[dict], person_appearances: List[dict], ignore_staff: bool
+    tracked_persons: List[dict],
+    person_appearances: List[dict],
+    ignore_staff: bool,
 ) -> None:
+
     for index, person in enumerate(person_appearances):
         if ignore_staff and person["type"] == "STAFF":
             continue
@@ -511,7 +513,11 @@ def initialize_tracked_persons(
         )
 
 
-def update_persons(tracked_persons, headcount_change=None, detected_faces=None):
+def update_tracked_persons(
+    tracked_persons: List[dict],
+    headcount_change: dict = None,
+    detected_faces: dict = None,
+) -> None:
     # If the face data of entering or leaving persons has to be updated
     if headcount_change is not None:
         # Identifier of the person involved in the headcount change
@@ -549,11 +555,11 @@ def main():
     with open("config.yaml", "r") as config_file:
         config = yaml.safe_load(config_file)
 
-    input_bag_path = get_file_path(file_type=BAG_FILE_TYPE)
+    input_bag_path = get_file_path(file_type=("BAG File", "*.bag"))
     input_bag_name = input_bag_path.name
 
     with pd.ExcelFile("dataset_metadata.xlsx") as xlsx:
-        dataset_metadata_df = pd.read_excel(io=xlsx)
+        dataset_metadata_df = pd.read_excel(xlsx)
 
     input_bag_metadata = dataset_metadata_df[
         dataset_metadata_df["bag_filename"] == input_bag_name
@@ -565,7 +571,7 @@ def main():
         person_appearances = json.loads(person_appearances_cell)
 
     # Get the current timestamp and format it
-    run_timestamp = datetime.now().strftime(format="%Y%m%dT%H%M%S")
+    run_timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
 
     # Temporary benchmark
     start_time = time.time()
@@ -630,7 +636,8 @@ def main():
             last_frame_number = msg.header.seq
 
     undesired_intervals = get_undesired_intervals(
-        bag_metadata=input_bag_metadata, config=config
+        bag_metadata=input_bag_metadata,
+        config=config,
     )
     desired_intervals = get_desired_intervals(
         undesired_intervals=undesired_intervals,
@@ -685,14 +692,13 @@ def main():
                             },
                         }
                     )
+
             # Sort the headcount changes by frame number
             headcount_changes.sort(key=lambda endpoint: endpoint["frame"])
 
             # Define the segments of the color stream
             # Initialize variables
-            current_frame_number = (
-                first_frame_number  # Current color stream frame number
-            )
+            current_frame_number = first_frame_number
             current_headcount = set()  # Indexes of the persons in the current segment
 
             # Process the headcount changes to segment the color stream
@@ -710,6 +716,7 @@ def main():
                     current_headcount.add(headcount_change["person"]["id"])
                 elif headcount_change["type"] == "leaves":
                     current_headcount.remove(headcount_change["person"]["id"])
+
             # Add the final segment if there are frames left
             if current_frame_number <= last_frame_number:
                 headcount_segments.append(
@@ -776,7 +783,7 @@ def main():
                     for headcount_change in headcount_changes:
                         if frame_number == headcount_change["frame"]:
                             # Insert or remove the facial data of the person involved in the headcount change
-                            update_persons(
+                            update_tracked_persons(
                                 tracked_persons=tracked_persons,
                                 headcount_change=headcount_change,
                             )
@@ -790,8 +797,8 @@ def main():
                         )
 
                         # Process the image to keep track of the persons appearing and blur their faces
-                        processed_cv_image = process_frame(
-                            frame_image=cv_image,
+                        processed_cv_image = analyze_and_anonymize_frame(
+                            frame=cv_image,
                             headcount_segment=current_headcount_segment,
                             tracked_persons=tracked_persons,
                             config=config,

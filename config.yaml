@@ -14,7 +14,7 @@ MIN_OUTPUT_DURATION: 3
 # Wound visibility settings
 KEEP_WOUND_FULLY_OUT: false  # Keep the wound completely out of the frame
 KEEP_WOUND_PARTIALLY_OUT: true  # Allow the wound to be partially out of the frame
-PARTIALLY_OUT_TOLERANCE: 3  # Tolerance level: 1: LIGHTLY, 2: MODERATELY, 3: HEAVILY
+PARTIALLY_OUT_TOLERANCE: 1  # Tolerance level: 1: LIGHTLY, 2: MODERATELY, 3: HEAVILY
 KEEP_WOUND_BLURRY: false  # Keep blurry wounds in the frame
 KEEP_WOUND_COVERED: false  # Keep wounds that are covered in the frame
 KEEP_WOUND_NEAR_FACE: false  # Keep wounds that are near the face in the frame
