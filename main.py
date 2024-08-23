@@ -10,11 +10,16 @@ from typing import Tuple, List, Dict, Optional
 import cv2
 import numpy as np
 import pandas as pd
-import rosbag
 from genpy import Time
 from retinaface import RetinaFace
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
+import sys
+import logging
+
+# Suppress warnings from rospy.logwarn before importing rosbag
+logging.getLogger("rosout").setLevel(logging.ERROR)
+import rosbag
 
 BAG_INITIALIZATION_TIME = Time(nsecs=1)  # Publish time of RealSense metadata
 BAG_SENSORS_START_TIME = Time(nsecs=20000)  # Publish start time of sensors
@@ -170,16 +175,19 @@ def create_output_bag(
     return rosbag.Bag(output_bag_path, "w"), output_bag_path
 
 
-def get_file_path(file_type: Tuple[str, str]) -> Path:
+def get_file_path(file_type: Tuple[str, str]) -> Optional[Path]:
 
-    main_window = tkinter.Tk()
-    main_window.withdraw()  # Hide the main window
+    project_path = Path().resolve()
 
-    file_path = Path(filedialog.askopenfilename(filetypes=[file_type]))
+    file_path = filedialog.askopenfilename(
+        filetypes=[file_type],
+        initialdir=project_path,
+    )
 
-    main_window.destroy()  # Close the main window
-
-    return file_path
+    if file_path == "":
+        return None
+    else:
+        return Path(file_path)
 
 
 def calculate_iou(box1: List[int], box2: List[int]) -> float:
@@ -386,7 +394,7 @@ def analyze_and_anonymize_frame(
             if matched_person_id is not None:
 
                 # Remove the pixel gap between the facial_area and the frame border introduced by RetinaFace
-                remove_pixel_gap(
+                remove_frame_border_gap(
                     detected_face=detected_face,
                     frame_width=frame_width,
                     frame_height=frame_height,
@@ -464,7 +472,11 @@ def analyze_and_anonymize_frame(
     return frame
 
 
-def remove_pixel_gap(detected_face: dict, frame_width: int, frame_height: int) -> None:
+def remove_frame_border_gap(
+    detected_face: dict,
+    frame_width: int,
+    frame_height: int,
+) -> None:
     # Ensure the facial area touches the frame border
     for landmark in detected_face["landmarks"].values():
         x, y = landmark
@@ -551,20 +563,42 @@ def update_tracked_persons(
 
 def main():
 
-    # Load config
+    # Initialize the Tkinter main window and hide it
+    main_window = tkinter.Tk()
+    main_window.withdraw()
+
+    # Load configuration from the YAML file
     with open("config.yaml", "r") as config_file:
         config = yaml.safe_load(config_file)
 
+    # Open a file dialog to select the BAG file
     input_bag_path = get_file_path(file_type=("BAG File", "*.bag"))
+
+    # Exit the program if no file was selected
+    if input_bag_path is None:
+        print("\nNo file selected. Exiting program.")
+        sys.exit()
+
+    # Extract the file name from the selected path
     input_bag_name = input_bag_path.name
 
+    # Load the Excel file containing the dataset metadata
     with pd.ExcelFile("dataset_metadata.xlsx") as xlsx:
         dataset_metadata_df = pd.read_excel(xlsx)
 
+    # Check if the selected BAG file exists in the Excel metadata
     input_bag_metadata = dataset_metadata_df[
         dataset_metadata_df["bag_filename"] == input_bag_name
     ]
 
+    # Exit the program if the file is not found in the Excel metadata
+    if input_bag_metadata.empty:
+        print(
+            f"\nError: The file '{input_bag_name}' does not exist in the dataset metadata. Exiting program."
+        )
+        sys.exit()
+
+    # Process person appearances if available
     person_appearances_cell = input_bag_metadata["person_appearances"].values[0]
     person_appearances = None
     if not pd.isna(person_appearances_cell):
@@ -573,23 +607,23 @@ def main():
     # Get the current timestamp and format it
     run_timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
 
-    # Temporary benchmark
+    # Temporary benchmark for performance measurement
     start_time = time.time()
 
     # Get the directory part of the path
     input_directory_path = input_bag_path.parent
 
-    # Add the new folder 'edits'
+    # Create the 'edits' folder if it doesn't exist
     output_directory_path = input_directory_path / "edits"
-
     if not output_directory_path.exists():
         output_directory_path.mkdir(parents=True)
 
+    # Open the input ROS bag file
     input_bag = rosbag.Bag(input_bag_path, "r")
 
     color_data_topic = None
     color_info_topic = None
-    # Get the bag topics
+    # Get the topics in the bag file
     input_bag_info = input_bag.get_type_and_topic_info()
     input_bag_topics = input_bag_info.topics
     # Initialize an empty list to store the continuous topics
@@ -617,6 +651,7 @@ def main():
     color_fps = None
     first_frame_number, last_frame_number = None, None
     color_msg_count = 0
+    # Iterate through the messages in the color data and info topics
     for topic, msg, _ in input_bag.read_messages(
         topics=[color_data_topic, color_info_topic]
     ):
@@ -635,6 +670,7 @@ def main():
             # Remember the last frame number
             last_frame_number = msg.header.seq
 
+    # Determine undesired and desired intervals
     undesired_intervals = get_undesired_intervals(
         bag_metadata=input_bag_metadata,
         config=config,
@@ -651,7 +687,7 @@ def main():
 
     if len(desired_intervals) > 0:
 
-        # Color stream
+        # Initialize data structures for color stream processing
         tracked_persons = []  # Updated data of the persons appearing
         headcount_changes = []  # List of the headcount changes during the stream
         headcount_segments = []  # Stream segmented by headcount changes
@@ -736,7 +772,7 @@ def main():
             headcount_segment_index = 0
             current_headcount_segment = headcount_segments[headcount_segment_index]
 
-            # Initialize the CvBridge
+            # Initialize the CvBridge for ROS-OpenCV conversions
             bridge = CvBridge()
 
         color_msg_counter = 0
@@ -746,6 +782,7 @@ def main():
         written_intervals = 0
         output_bag, current_output_bag_path = None, None
 
+        # Iterate through all messages in the input bag file
         for topic, msg_raw, t in input_bag.read_messages(raw=True):
 
             if (not task_finished) and (color_data_topic in topic):
@@ -753,11 +790,11 @@ def main():
                 # Unpack the message tuple
                 msg_type, serialized_bytes, md5sum, pos, pytype = msg_raw
 
-                # Deserialize the message bytes
+                # Deserialize the message bytes into an Image message
                 deserialized_bytes = Image()
                 deserialized_bytes.deserialize(serialized_bytes)
 
-                # Save the header values
+                # Save the header values from the message
                 frame_number = deserialized_bytes.header.seq
                 frame_timestamp = deserialized_bytes.header.stamp
 
@@ -772,7 +809,7 @@ def main():
                 processed_cv_image = None
 
                 if person_appearances is not None:
-                    # Update the current segment of the stream
+                    # Update the current segment of the stream if necessary
                     if frame_number > current_headcount_segment["end_frame"]:
                         headcount_segment_index += 1
                         current_headcount_segment = headcount_segments[
@@ -896,9 +933,11 @@ def main():
             output_bag.close()
             print(f"\nClosed bag file: {current_output_bag_path}\n")
 
+    # Close the input bag file
     input_bag.close()
     print(f"Processing complete.\nEdited bag files saved in: {output_directory_path}")
 
+    # Calculate and display the duration of the process
     end_time = time.time()
     duration = (end_time - start_time) / 60
     print(f"\nTime: {format(round(duration, 3))} minutes")
