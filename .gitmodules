@@ -6,11 +6,3 @@
 	path = cv_bridge/vision_opencv
 	url = https://github.com/ros-perception/vision_opencv.git
 	branch = noetic
-[submodule "roslz4/ros_comm"]
-	path = roslz4/ros_comm
-	url = https://github.com/ros/ros_comm.git
-	branch = noetic-devel
-[submodule "roslz4/roscpp_core"]
-	path = roslz4/roscpp_core
-	url = https://github.com/ros/roscpp_core.git
-	branch = noetic-devel
