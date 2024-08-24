@@ -275,7 +275,8 @@ def analyze_and_anonymize_frame(
     headcount_segment: dict,
     tracked_persons: List[dict],
     config: dict,
-) -> np.ndarray:
+    should_anonymize: bool,
+) -> Optional[np.ndarray]:
 
     frame_height, frame_width = frame.shape[:2]
 
@@ -418,58 +419,66 @@ def analyze_and_anonymize_frame(
                 detected_faces=detected_faces,
             )
 
-    # Check for missing persons
-    missing_person_ids = set(headcount_segment["headcount"]) - assigned_person_ids
+    if should_anonymize:
 
-    # If there are persons missing in the detection list
-    if len(missing_person_ids) > 0:
+        # Check for missing persons
+        missing_person_ids = set(headcount_segment["headcount"]) - assigned_person_ids
 
-        # Iterate through the missing persons to check if their previous facial data exists and can be used
-        for index, person_id in enumerate(missing_person_ids, start=1):
+        # If there are persons missing in the detection list
+        if len(missing_person_ids) > 0:
 
-            if tracked_persons[person_id]["facial_area"] is not None:
-                detected_faces[f"previous_{index}"] = {
-                    "score": config["MAX_CONFIDENCE_SCORE"],
-                    "facial_area": tracked_persons[person_id]["facial_area"],
-                    "landmarks": tracked_persons[person_id]["landmarks"],
-                    "person_id": person_id,
-                }
+            # Iterate through the missing persons to check if their previous facial data exists and can be used
+            for index, person_id in enumerate(missing_person_ids, start=1):
 
-    if len(detected_faces) > 0:
-        # Blur each detected face
-        for detected_face in detected_faces.values():
-            x1, y1, x2, y2 = detected_face["facial_area"]
+                if tracked_persons[person_id]["facial_area"] is not None:
+                    detected_faces[f"previous_{index}"] = {
+                        "score": config["MAX_CONFIDENCE_SCORE"],
+                        "facial_area": tracked_persons[person_id]["facial_area"],
+                        "landmarks": tracked_persons[person_id]["landmarks"],
+                        "person_id": person_id,
+                    }
 
-            # Blur the detected face region
-            frame[y1:y2, x1:x2] = cv2.GaussianBlur(
-                src=frame[y1:y2, x1:x2],
-                ksize=(51, 51),
-                sigmaX=30,
-            )
+        if len(detected_faces) > 0:
+            # Blur each detected face
+            for detected_face in detected_faces.values():
+                x1, y1, x2, y2 = detected_face["facial_area"]
 
-            # Print the person id in bold and white font
-            person_id = detected_face["person_id"]
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 1.0
-            thickness = 2
-            color = (255, 255, 255)  # White color
-            text_size, _ = cv2.getTextSize(str(person_id), font, font_scale, thickness)
-            text_x = x1 + (x2 - x1 - text_size[0]) // 2
-            text_y = y1 + (y2 - y1 + text_size[1]) // 2
-            cv2.putText(
-                img=frame,
-                text=f"{person_id}",
-                org=(text_x, text_y),
-                fontFace=font,
-                fontScale=font_scale,
-                color=color,
-                thickness=thickness,
-                lineType=cv2.LINE_AA,
-            )
+                # Blur the detected face region
+                frame[y1:y2, x1:x2] = cv2.GaussianBlur(
+                    src=frame[y1:y2, x1:x2],
+                    ksize=(51, 51),
+                    sigmaX=30,
+                )
 
-    frame = cv2.cvtColor(src=frame, code=cv2.COLOR_BGR2RGB)
+                # Print the person id in bold and white font
+                person_id = detected_face["person_id"]
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 1.0
+                thickness = 2
+                color = (255, 255, 255)  # White color
+                text_size, _ = cv2.getTextSize(
+                    str(person_id), font, font_scale, thickness
+                )
+                text_x = x1 + (x2 - x1 - text_size[0]) // 2
+                text_y = y1 + (y2 - y1 + text_size[1]) // 2
+                cv2.putText(
+                    img=frame,
+                    text=f"{person_id}",
+                    org=(text_x, text_y),
+                    fontFace=font,
+                    fontScale=font_scale,
+                    color=color,
+                    thickness=thickness,
+                    lineType=cv2.LINE_AA,
+                )
 
-    return frame
+        # Revert the color space back to RGB8
+        frame = cv2.cvtColor(src=frame, code=cv2.COLOR_BGR2RGB)
+
+        return frame
+
+    else:
+        return None
 
 
 def remove_frame_border_gap(
@@ -670,11 +679,16 @@ def main():
             # Remember the last frame number
             last_frame_number = msg.header.seq
 
-    # Determine undesired and desired intervals
+    # Determine undesired intervals
     undesired_intervals = get_undesired_intervals(
         bag_metadata=input_bag_metadata,
         config=config,
     )
+    print("\nUndesired frame intervals:")
+    for interval in undesired_intervals:
+        print(f"\t{interval}")
+
+    # Determine desired intervals
     desired_intervals = get_desired_intervals(
         undesired_intervals=undesired_intervals,
         first_frame_number=first_frame_number,
@@ -682,8 +696,10 @@ def main():
         fps=color_fps,
         min_output_duration=config["MIN_OUTPUT_DURATION"],
     )
-    print(f"\nUndesired intervals: {undesired_intervals}")
-    print(f"Desired intervals: {desired_intervals}\n")
+    print("\nDesired frame intervals:")
+    for interval in desired_intervals:
+        print(f"\t{interval}")
+    print("")
 
     if len(desired_intervals) > 0:
 
@@ -807,6 +823,11 @@ def main():
                 )
 
                 processed_cv_image = None
+                must_write_frame = False
+
+                # If the current color frame is part of a desired interval
+                if is_frame_in_intervals(frame_number, desired_intervals):
+                    must_write_frame = True
 
                 if person_appearances is not None:
                     # Update the current segment of the stream if necessary
@@ -839,10 +860,10 @@ def main():
                             headcount_segment=current_headcount_segment,
                             tracked_persons=tracked_persons,
                             config=config,
+                            should_anonymize=must_write_frame,
                         )
 
-                # If the current color frame is part of a desired interval
-                if is_frame_in_intervals(frame_number, desired_intervals):
+                if must_write_frame:
 
                     if person_appearances is not None:
                         # Only process the current message if persons appear in the stream segment
