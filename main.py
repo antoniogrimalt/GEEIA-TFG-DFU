@@ -10,6 +10,7 @@ from typing import Tuple, List, Dict, Optional
 import cv2
 import numpy as np
 import pandas as pd
+from pandas import DataFrame
 from genpy import Time
 from retinaface import RetinaFace
 from sensor_msgs.msg import Image
@@ -570,6 +571,64 @@ def update_tracked_persons(
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
 
 
+def load_config_file(filename: str) -> dict:
+
+    try:
+        # Load configuration from the YAML file
+        with open(filename, "r") as config_file:
+            config = yaml.safe_load(config_file)
+
+        # Check if the config is None or empty
+        if config is None or not config:
+            print(
+                f"\nError: The config file '{filename}' was loaded, but it contains no data."
+            )
+        else:
+            return config
+
+    except FileNotFoundError:
+        print(f"\nError: The config file '{filename}' was not found.")
+    except yaml.YAMLError as e:
+        print(
+            f"\nError: An issue occurred while parsing the config file '{filename}'.\n\tDetails: {e}"
+        )
+    except Exception as e:
+        print(
+            f"\nError: An issue occurred while loading the config file '{filename}'.\n\tDetails: {e}"
+        )
+
+    # Exit the program
+    print(f"\nExiting the program.")
+    sys.exit()
+
+
+def load_metadata_file(filename: str) -> DataFrame:
+
+    try:
+        # Load the Excel file containing the dataset metadata
+        with pd.ExcelFile("dataset_metadata.xlsx") as xlsx:
+            dataset_metadata = pd.read_excel(xlsx)
+
+        # Check if the DataFrame is empty
+        if dataset_metadata.empty:
+            print(
+                f"\nError: The metadata file '{filename}' was loaded, but it contains no data."
+            )
+        else:
+            return dataset_metadata
+
+    except FileNotFoundError:
+        print(f"\nError: The metadata file '{filename}' was not found.")
+    except Exception as e:
+        print(
+            f"\nError: An issue occurred while loading the metadata file '{filename}'.\n\tDetails: {e}"
+        )
+
+    # Exit the program
+    print(f"\nExiting the program.")
+    sys.exit()
+
+
 def main():
 
     # Initialize the Tkinter main window and hide it
@@ -577,27 +636,30 @@ def main():
     main_window.withdraw()
 
     # Load configuration from the YAML file
-    with open("config.yaml", "r") as config_file:
-        config = yaml.safe_load(config_file)
+    config = load_config_file("config.yaml")
 
     # Open a file dialog to select the BAG file
     input_bag_path = get_file_path(file_type=("BAG File", "*.bag"))
 
     # Exit the program if no file was selected
     if input_bag_path is None:
-        print("\nNo file selected. Exiting program.")
+        print("\nError: The input bag file was not selected.")
+
+        # Exit the program
+        print(f"\nExiting the program.")
         sys.exit()
+    else:
+        print(f"\nSelected bag file: {input_bag_path}")
 
     # Extract the file name from the selected path
     input_bag_name = input_bag_path.name
 
     # Load the Excel file containing the dataset metadata
-    with pd.ExcelFile("dataset_metadata.xlsx") as xlsx:
-        dataset_metadata_df = pd.read_excel(xlsx)
+    dataset_metadata = load_metadata_file("dataset_metadata.xlsx")
 
     # Check if the selected BAG file exists in the Excel metadata
-    input_bag_metadata = dataset_metadata_df[
-        dataset_metadata_df["bag_filename"] == input_bag_name
+    input_bag_metadata = dataset_metadata[
+        dataset_metadata["bag_filename"] == input_bag_name
     ]
 
     # Exit the program if the file is not found in the Excel metadata
