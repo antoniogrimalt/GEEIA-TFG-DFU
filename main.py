@@ -26,7 +26,10 @@ BAG_INITIALIZATION_TIME = Time(nsecs=1)  # Publish time of RealSense metadata
 BAG_SENSORS_START_TIME = Time(nsecs=20000)  # Publish start time of sensors
 
 
-def combine_undesired_intervals(intervals: List[dict]) -> List[dict]:
+def combine_undesired_intervals(
+    intervals: List[dict],
+    min_output_bag_frames: float,
+) -> List[dict]:
 
     if not intervals:
         return []
@@ -39,9 +42,12 @@ def combine_undesired_intervals(intervals: List[dict]) -> List[dict]:
     for current_interval in intervals[1:]:
         last_interval = combined_intervals[-1]
 
+        # Calculate the separation between the current and last intervals
+        frame_gap = current_interval["start_frame"] - last_interval["end_frame"]
+
         # If the current interval overlaps or is adjacent to the last one, merge them
-        if (current_interval["start_frame"] < last_interval["end_frame"]) or (
-            current_interval["start_frame"] == last_interval["end_frame"] + 1
+        if (current_interval["start_frame"] <= last_interval["end_frame"] + 1) or (
+            frame_gap < min_output_bag_frames
         ):
             last_interval["end_frame"] = max(
                 last_interval["end_frame"], current_interval["end_frame"]
@@ -52,7 +58,11 @@ def combine_undesired_intervals(intervals: List[dict]) -> List[dict]:
     return combined_intervals
 
 
-def get_undesired_intervals(bag_metadata: pd.DataFrame, config: dict) -> List[dict]:
+def get_undesired_intervals(
+    bag_metadata: pd.DataFrame,
+    config: dict,
+    min_output_bag_frames: float,
+) -> List[dict]:
 
     wound_partially_out = bag_metadata["wound_partially_out"].values[0]
     wound_fully_out = bag_metadata["wound_fully_out"].values[0]
@@ -95,15 +105,17 @@ def get_undesired_intervals(bag_metadata: pd.DataFrame, config: dict) -> List[di
         undesired_intervals += json.loads(wound_near_face)
 
     # Combine overlapping or adjacent undesired intervals
-    return combine_undesired_intervals(undesired_intervals)
+    return combine_undesired_intervals(
+        intervals=undesired_intervals,
+        min_output_bag_frames=min_output_bag_frames,
+    )
 
 
 def get_desired_intervals(
     undesired_intervals: List[dict],
     first_frame_number: int,
     last_frame_number: int,
-    fps: int,
-    min_output_duration: int,
+    min_output_bag_frames: float,
 ) -> List[dict]:
 
     desired_intervals = []
@@ -132,14 +144,12 @@ def get_desired_intervals(
             }
         )
 
-    # Calculate the minimum number of frames for the desired interval
-    min_frames = fps * min_output_duration
-
     # Filter out desired intervals that are shorter than the minimum duration
     filtered_desired_intervals = [
         interval
         for interval in desired_intervals
-        if (interval["end_frame"] - interval["start_frame"] + 1) >= min_frames
+        if (interval["end_frame"] - interval["start_frame"] + 1)
+        >= min_output_bag_frames
     ]
 
     return filtered_desired_intervals
@@ -152,6 +162,14 @@ def is_frame_in_intervals(frame: int, intervals: List[dict]) -> bool:
             return True
 
     return False
+
+
+def is_frame_in_interval(frame: int, interval: dict) -> bool:
+
+    if interval["start_frame"] <= frame <= interval["end_frame"]:
+        return True
+    else:
+        return False
 
 
 def create_output_bag(
@@ -174,21 +192,6 @@ def create_output_bag(
     output_bag_path = output_directory_path / output_bag_name
 
     return rosbag.Bag(output_bag_path, "w"), output_bag_path
-
-
-def get_file_path(file_type: Tuple[str, str]) -> Optional[Path]:
-
-    project_path = Path().resolve()
-
-    file_path = filedialog.askopenfilename(
-        filetypes=[file_type],
-        initialdir=project_path,
-    )
-
-    if file_path == "":
-        return None
-    else:
-        return Path(file_path)
 
 
 def calculate_iou(box1: List[int], box2: List[int]) -> float:
@@ -629,6 +632,21 @@ def load_metadata_file(filename: str) -> DataFrame:
     sys.exit()
 
 
+def select_dataset_path(project_path: Path, window: tkinter.Tk) -> Optional[Path]:
+
+    dataset_path = filedialog.askdirectory(
+        initialdir=project_path,
+        mustexist=True,
+        parent=window,
+        title="Select Dataset Folder",
+    )
+
+    if dataset_path == "":
+        return None
+    else:
+        return Path(dataset_path)
+
+
 def main():
 
     # Initialize the Tkinter main window and hide it
@@ -638,130 +656,138 @@ def main():
     # Load configuration from the YAML file
     config = load_config_file("config.yaml")
 
+    # Load the Excel file containing the dataset metadata
+    dataset_metadata = load_metadata_file("dataset_metadata.xlsx")
+
+    # Project path
+    project_path = Path().resolve()
+
     # Open a file dialog to select the BAG file
-    input_bag_path = get_file_path(file_type=("BAG File", "*.bag"))
+    dataset_path = select_dataset_path(
+        project_path=project_path,
+        window=main_window,
+    )
 
     # Exit the program if no file was selected
-    if input_bag_path is None:
-        print("\nError: The input bag file was not selected.")
+    if dataset_path is None:
+        print("\nError: The dataset folder was not selected.")
 
         # Exit the program
         print(f"\nExiting the program.")
         sys.exit()
     else:
-        print(f"\nSelected bag file: {input_bag_path}")
+        print(f"\nSelected dataset folder: {dataset_path}")
+        print("\n------------------------------------------------------------")
 
-    # Extract the file name from the selected path
-    input_bag_name = input_bag_path.name
+    # Create the 'edits' folder if it doesn't exist
+    output_directory_path = dataset_path / "edits"
+    if not output_directory_path.exists():
+        output_directory_path.mkdir(parents=True)
 
-    # Load the Excel file containing the dataset metadata
-    dataset_metadata = load_metadata_file("dataset_metadata.xlsx")
-
-    # Check if the selected BAG file exists in the Excel metadata
-    input_bag_metadata = dataset_metadata[
-        dataset_metadata["bag_filename"] == input_bag_name
+    # List all .bag files in the directory
+    bag_file_paths = [
+        bag_file_path
+        for bag_file_path in dataset_path.glob("*.bag")
+        if bag_file_path.is_file()
     ]
-
-    # Exit the program if the file is not found in the Excel metadata
-    if input_bag_metadata.empty:
-        print(
-            f"\nError: The file '{input_bag_name}' does not exist in the dataset metadata. Exiting program."
-        )
-        sys.exit()
-
-    # Process person appearances if available
-    person_appearances_cell = input_bag_metadata["person_appearances"].values[0]
-    person_appearances = None
-    if not pd.isna(person_appearances_cell):
-        person_appearances = json.loads(person_appearances_cell)
-
-    # Get the current timestamp and format it
-    run_timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
 
     # Temporary benchmark for performance measurement
     start_time = time.time()
 
-    # Get the directory part of the path
-    input_directory_path = input_bag_path.parent
+    for bag_file_path in bag_file_paths:
+        # Extract the file name from the selected path
+        bag_file_name = bag_file_path.name
 
-    # Create the 'edits' folder if it doesn't exist
-    output_directory_path = input_directory_path / "edits"
-    if not output_directory_path.exists():
-        output_directory_path.mkdir(parents=True)
+        print(f"\nProcessing of the file '{bag_file_name}' has started.")
+
+        bag_metadata = dataset_metadata[
+            dataset_metadata["bag_filename"] == bag_file_name
+        ]
+
+        process_bag_file(
+            config=config,
+            input_bag_path=bag_file_path,
+            input_bag_metadata=bag_metadata,
+            output_directory_path=output_directory_path,
+        )
+
+    # Calculate and display the duration of the process
+    end_time = time.time()
+    duration = (end_time - start_time) / 60
+    print(f"\nTime: {format(round(duration, 3))} minutes")
+
+
+def process_bag_file(
+    config: dict,
+    input_bag_path: Path,
+    input_bag_metadata: DataFrame,
+    output_directory_path: Path,
+):
 
     # Open the input ROS bag file
     input_bag = rosbag.Bag(input_bag_path, "r")
 
+    # Get the data and info topics of the color stream
+    # . Initialize topic variables
     color_data_topic = None
     color_info_topic = None
-    # Get the topics in the bag file
-    input_bag_info = input_bag.get_type_and_topic_info()
-    input_bag_topics = input_bag_info.topics
-    # Initialize an empty list to store the continuous topics
-    continuous_topics = []
-    # Iterate through each topic and its info
-    for topic, info in input_bag_topics.items():
-        # Check if topic is color info, save it in case it is
-        if (color_info_topic is None) and (topic.endswith("Color_0/info")):
+
+    # . Obtain the list of all topics in the bag file
+    input_bag_topics = input_bag.get_type_and_topic_info().topics.keys()
+
+    # . Find the data and info ones
+    for topic in input_bag_topics:
+        if topic.endswith("Color_0/info"):
             color_info_topic = topic
+        elif "Color_0/image/data" in topic:
+            color_data_topic = topic
 
-        # Check if the topic has a frequency different from None
-        if info.frequency is not None:
-            # Check if topic is color data, save it in case it is
-            if (color_data_topic is None) and ("Color_0/image/data" in topic):
-                color_data_topic = topic
+        # If both topics are found, no need to continue the loop
+        if color_data_topic and color_info_topic:
+            break
 
-            # Add the topic to the continuous topics list
-            continuous_topics.append(topic)
-            # Check for corresponding metadata topics and add them
-            metadata_topic = topic.replace("/data", "/metadata")
-            if metadata_topic in input_bag_topics:
-                continuous_topics.append(metadata_topic)
+    # Get the fps, the first and last frame numbers of the color stream
+    # . Initialize
+    color_stream_fps = None
+    first_frame_number = None
+    last_frame_number = None
 
-    # Get the color stream info
-    color_fps = None
-    first_frame_number, last_frame_number = None, None
-    color_msg_count = 0
-    # Iterate through the messages in the color data and info topics
+    # . Find the frame numbers and the fps
     for topic, msg, _ in input_bag.read_messages(
         topics=[color_data_topic, color_info_topic]
     ):
-        if color_info_topic in topic:
+        if topic == color_info_topic:
             # Save the color stream fps
-            color_fps = msg.fps
+            color_stream_fps = msg.fps
 
         elif color_data_topic in topic:
-            # Increase color message count
-            color_msg_count += 1
-
-            # If it's the first message, save its frame number
-            if color_msg_count == 1:
+            # Save the first frame number
+            if first_frame_number is None:
                 first_frame_number = msg.header.seq
 
-            # Remember the last frame number
+            # Continuously update the last frame number
             last_frame_number = msg.header.seq
+
+    # Minimum number of frames in an output bag
+    min_output_bag_frames = color_stream_fps * config["MIN_OUTPUT_DURATION"]
 
     # Determine undesired intervals
     undesired_intervals = get_undesired_intervals(
         bag_metadata=input_bag_metadata,
         config=config,
+        min_output_bag_frames=min_output_bag_frames,
     )
-    print("\nUndesired frame intervals:")
-    for interval in undesired_intervals:
-        print(f"\t{interval}")
 
     # Determine desired intervals
     desired_intervals = get_desired_intervals(
         undesired_intervals=undesired_intervals,
         first_frame_number=first_frame_number,
         last_frame_number=last_frame_number,
-        fps=color_fps,
-        min_output_duration=config["MIN_OUTPUT_DURATION"],
+        min_output_bag_frames=min_output_bag_frames,
     )
-    print("\nDesired frame intervals:")
+    print("\nThe desired frame intervals are:")
     for interval in desired_intervals:
         print(f"\t{interval}")
-    print("")
 
     if len(desired_intervals) > 0:
 
@@ -769,6 +795,15 @@ def main():
         tracked_persons = []  # Updated data of the persons appearing
         headcount_changes = []  # List of the headcount changes during the stream
         headcount_segments = []  # Stream segmented by headcount changes
+
+        # Get the current timestamp and format it
+        run_timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+
+        # Process person appearances if available
+        person_appearances_cell = input_bag_metadata["person_appearances"].values[0]
+        person_appearances = None
+        if not pd.isna(person_appearances_cell):
+            person_appearances = json.loads(person_appearances_cell)
 
         if person_appearances is not None:
 
@@ -853,17 +888,26 @@ def main():
             # Initialize the CvBridge for ROS-OpenCV conversions
             bridge = CvBridge()
 
-        color_msg_counter = 0
+        desired_interval_index = 0
+        current_desired_interval = desired_intervals[desired_interval_index]
+
+        undesired_interval_index = None
+        current_undesired_interval = None
+        if len(undesired_intervals) > 0:
+            undesired_interval_index = 0
+            current_undesired_interval = undesired_intervals[undesired_interval_index]
+
         writing_desired_frames = False
-        task_finished = False
+        bag_processing_finished = False
         clip_start_time = None
-        written_intervals = 0
-        output_bag, current_output_bag_path = None, None
+        output_bag = None
+        current_output_bag_path = None
+        frame_number = None
 
         # Iterate through all messages in the input bag file
         for topic, msg_raw, t in input_bag.read_messages(raw=True):
 
-            if (not task_finished) and (color_data_topic in topic):
+            if (not bag_processing_finished) and (color_data_topic in topic):
 
                 # Unpack the message tuple
                 msg_type, serialized_bytes, md5sum, pos, pytype = msg_raw
@@ -876,19 +920,39 @@ def main():
                 frame_number = deserialized_bytes.header.seq
                 frame_timestamp = deserialized_bytes.header.stamp
 
-                # Keep track of the current color message to print the progress of the process
-                color_msg_counter += 1
-                print(
-                    f"\rProcessed {color_msg_counter}/{color_msg_count} color data messages. Current color frame: {frame_number}",
-                    end="",
-                    flush=True,
-                )
-
                 processed_cv_image = None
                 must_write_frame = False
 
+                # Update the current desired interval
+                if frame_number == current_desired_interval["start_frame"]:
+                    interval = f"{current_desired_interval['start_frame']}, {current_desired_interval['end_frame']}"
+                    print(
+                        f"\n\nProcessing of the desired interval [{interval}] has started."
+                    )
+                elif (len(undesired_intervals) > 0) and (
+                    frame_number == current_undesired_interval["start_frame"]
+                ):
+                    interval = f"{current_undesired_interval['start_frame']}, {current_undesired_interval['end_frame']}"
+                    print(
+                        f"\nTracking in the undesired interval [{interval}] has started."
+                    )
+                elif (frame_number > current_desired_interval["end_frame"]) and (
+                    desired_interval_index < len(desired_intervals) - 1
+                ):
+                    desired_interval_index += 1
+                    current_desired_interval = desired_intervals[desired_interval_index]
+                elif (
+                    (len(undesired_intervals) > 0)
+                    and (frame_number > current_undesired_interval["end_frame"])
+                    and (undesired_interval_index < len(undesired_intervals) - 1)
+                ):
+                    undesired_interval_index += 1
+                    current_undesired_interval = undesired_intervals[
+                        undesired_interval_index
+                    ]
+
                 # If the current color frame is part of a desired interval
-                if is_frame_in_intervals(frame_number, desired_intervals):
+                if is_frame_in_interval(frame_number, current_desired_interval):
                     must_write_frame = True
 
                 if person_appearances is not None:
@@ -962,10 +1026,10 @@ def main():
                         output_bag, current_output_bag_path = create_output_bag(
                             input_bag_path=input_bag_path,
                             run_timestamp=run_timestamp,
-                            output_bag_clip=written_intervals,
+                            output_bag_clip=desired_interval_index,
                             output_directory_path=output_directory_path,
                         )
-                        print(f"\nCreated bag file: {current_output_bag_path}")
+                        print(f"Created bag file: {current_output_bag_path.name}")
 
                         # Write the RealSense config messages to the output bag clip
                         for rs_topic, rs_msg, rs_t in input_bag.read_messages(
@@ -975,26 +1039,7 @@ def main():
                                 topic=rs_topic, msg=rs_msg, t=rs_t, raw=True
                             )
 
-                        # Add to the count of written intervals
-                        written_intervals += 1
-
-                # If the current color frame isn't part of a desired interval
-                else:
-                    # and a clip was being written
-                    if writing_desired_frames:
-                        # Update the flag to disable the writing
-                        writing_desired_frames = False
-
-                        # Close the current output bag clip
-                        output_bag.close()
-                        print(f"\nClosed bag file: {current_output_bag_path}\n")
-
-                        # If all the desired intervals were written the task is finished
-                        if written_intervals == len(desired_intervals):
-                            task_finished = True
-
-                        # Reset for the next clip
-                        clip_start_time = None
+                print(f"\rCurrent color frame: {frame_number}", end="", flush=True)
 
             # If a clip is being written
             if writing_desired_frames:
@@ -1010,20 +1055,36 @@ def main():
                     raw=True,
                 )
 
+                if frame_number == current_desired_interval["end_frame"]:
+
+                    # Update the flag to disable the writing
+                    writing_desired_frames = False
+
+                    # Close the current output bag clip
+                    close_bag(bag=output_bag, bag_path=current_output_bag_path)
+
+                    # If all the desired intervals were written the task is finished
+                    if desired_interval_index == len(desired_intervals) - 1:
+                        bag_processing_finished = True
+
+                    # Reset for the next clip
+                    clip_start_time = None
+
         # If clip was being written after all the input_bag's messages were read
         if writing_desired_frames:
             # Close the current output bag clip
-            output_bag.close()
-            print(f"\nClosed bag file: {current_output_bag_path}\n")
+            close_bag(bag=output_bag, bag_path=current_output_bag_path)
 
     # Close the input bag file
     input_bag.close()
-    print(f"Processing complete.\nEdited bag files saved in: {output_directory_path}")
+    print(f"\nProcessing of the file '{input_bag_path.name}' has finished.")
+    print("\n------------------------------------------------------------")
 
-    # Calculate and display the duration of the process
-    end_time = time.time()
-    duration = (end_time - start_time) / 60
-    print(f"\nTime: {format(round(duration, 3))} minutes")
+
+def close_bag(bag: rosbag.Bag, bag_path: Path) -> None:
+
+    bag.close()
+    print(f"\nClosed bag file: {bag_path.name}")
 
 
 if __name__ == "__main__":
