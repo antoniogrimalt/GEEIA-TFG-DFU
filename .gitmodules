@@ -1,0 +1,12 @@
+[submodule "dependencies/repositories/ros_comm"]
+	path = dependencies/repositories/ros_comm
+	url = https://github.com/ros/ros_comm.git
+	branch = noetic-devel
+[submodule "dependencies/repositories/vision_opencv"]
+	path = dependencies/repositories/vision_opencv
+	url = https://github.com/ros-perception/vision_opencv.git
+	branch = noetic
+[submodule "dependencies/repositories/simple"]
+	path = dependencies/repositories/simple
+	url = https://github.com/rospypi/simple.git
+	branch = master
