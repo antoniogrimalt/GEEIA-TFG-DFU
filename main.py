@@ -26,38 +26,6 @@ BAG_INITIALIZATION_TIME = Time(nsecs=1)  # Publish time of RealSense metadata
 BAG_SENSORS_START_TIME = Time(nsecs=20000)  # Publish start time of sensors
 
 
-def combine_undesired_intervals(
-    intervals: List[dict],
-    min_output_bag_frames: float,
-) -> List[dict]:
-
-    if not intervals:
-        return []
-
-    # Sort intervals by start_frame
-    intervals.sort(key=lambda x: x["start_frame"])
-
-    combined_intervals = [intervals[0]]
-
-    for current_interval in intervals[1:]:
-        last_interval = combined_intervals[-1]
-
-        # Calculate the separation between the current and last intervals
-        frame_gap = current_interval["start_frame"] - last_interval["end_frame"]
-
-        # If the current interval overlaps or is adjacent to the last one, merge them
-        if (current_interval["start_frame"] <= last_interval["end_frame"] + 1) or (
-            frame_gap < min_output_bag_frames
-        ):
-            last_interval["end_frame"] = max(
-                last_interval["end_frame"], current_interval["end_frame"]
-            )
-        else:
-            combined_intervals.append(current_interval)
-
-    return combined_intervals
-
-
 def get_undesired_intervals(
     bag_metadata: pd.DataFrame,
     config: dict,
@@ -104,11 +72,32 @@ def get_undesired_intervals(
     if (not config["KEEP_WOUND_NEAR_FACE"]) and (not pd.isna(wound_near_face)):
         undesired_intervals += json.loads(wound_near_face)
 
-    # Combine overlapping or adjacent undesired intervals
-    return combine_undesired_intervals(
-        intervals=undesired_intervals,
-        min_output_bag_frames=min_output_bag_frames,
-    )
+    if not undesired_intervals:
+        return []
+
+    # Combine overlapping or adjacent intervals
+    # . Sort intervals by start_frame
+    undesired_intervals.sort(key=lambda x: x["start_frame"])
+
+    combined_intervals = [undesired_intervals[0]]
+
+    for current_interval in undesired_intervals[1:]:
+        last_interval = combined_intervals[-1]
+
+        # Calculate the number of desired frames between the current and the last undesired interval
+        frames_in_gap = current_interval["start_frame"] - last_interval["end_frame"] - 1
+
+        # If the current interval overlaps or is adjacent to the last one, merge them
+        if (current_interval["start_frame"] <= last_interval["end_frame"] + 1) or (
+            frames_in_gap < min_output_bag_frames
+        ):
+            last_interval["end_frame"] = max(
+                last_interval["end_frame"], current_interval["end_frame"]
+            )
+        else:
+            combined_intervals.append(current_interval)
+
+    return combined_intervals
 
 
 def get_desired_intervals(
