@@ -22,6 +22,7 @@ import logging
 logging.getLogger("rosout").setLevel(logging.ERROR)
 import rosbag
 
+
 BAG_INITIALIZATION_TIME = Time(nsecs=1)  # Publish time of RealSense metadata
 BAG_SENSORS_START_TIME = Time(nsecs=20000)  # Publish start time of sensors
 
@@ -32,13 +33,13 @@ def get_undesired_intervals(
     min_output_bag_frames: float,
 ) -> List[dict]:
 
+    undesired_intervals = []
+
     wound_partially_out = bag_metadata["wound_partially_out"].values[0]
     wound_fully_out = bag_metadata["wound_fully_out"].values[0]
     wound_blurry = bag_metadata["wound_blurry"].values[0]
     wound_covered = bag_metadata["wound_covered"].values[0]
     wound_near_face = bag_metadata["wound_near_face"].values[0]
-
-    undesired_intervals = []
 
     # Add intervals where wound visibility is partial based on tolerance
     if not pd.isna(wound_partially_out):
@@ -180,23 +181,10 @@ def create_output_bag(
     # Combine the new directory path and the new filename
     output_bag_path = output_directory_path / output_bag_name
 
-    return rosbag.Bag(output_bag_path, "w"), output_bag_path
+    return rosbag.Bag(f=output_bag_path, mode="w"), output_bag_path
 
 
 def calculate_iou(box1: List[int], box2: List[int]) -> float:
-    """
-    Calculate the Intersection over Union (IoU) of two bounding boxes.
-
-    The IoU is a measure of the overlap between two bounding boxes. It is calculated
-    as the area of the intersection divided by the area of the union of the boxes.
-
-    Parameters:
-    box1 (List[int]): Coordinates of the first bounding box in the format [x_min, y_min, x_max, y_max].
-    box2 (List[int]): Coordinates of the second bounding box in the format [x_min, y_min, x_max, y_max].
-
-    Returns:
-    float: The IoU value between the two bounding boxes.
-    """
 
     # Extract the coordinates for both bounding boxes
     x1_min, y1_min, x1_max, y1_max = box1
@@ -230,18 +218,7 @@ def calculate_avg_landmark_distance(
     person_landmarks: Dict[str, List[float]],
     detected_landmarks: Dict[str, List[float]],
 ) -> Optional[float]:
-    """
-    Calculate the average distance between corresponding landmarks of a person and a detected face.
 
-    Parameters:
-    person_landmarks (Dict[str, List[float]]): A dictionary of known landmarks for a person.
-                                               Keys are landmark names (e.g., 'right_eye', 'nose'), and values are [x, y] coordinates.
-    detected_landmarks (Dict[str, List[float]]): A dictionary of detected landmarks from the current face.
-                                                 Keys are landmark names (e.g., 'right_eye', 'nose'), and values are [x, y] coordinates.
-
-    Returns:
-    Optional[float]: The average distance between corresponding landmarks, or None if no valid landmarks are found.
-    """
     total_distance = 0
     valid_landmark_count = 0
 
@@ -263,6 +240,79 @@ def calculate_avg_landmark_distance(
         return None
 
 
+def flip_coordinates(
+    frame_height: int, frame_width: int, detected_face: dict, flip_code: int
+) -> dict:
+
+    y_max = frame_height - 1
+    x_max = frame_width - 1
+
+    facial_area = detected_face["facial_area"]
+
+    right_eye, left_eye, nose, mouth_right, mouth_left = None, None, None, None, None
+
+    # Flip vertically
+    if (flip_code == 0) or (flip_code == -1):
+        # Invert the Y coordinates of facial_area
+        facial_area_y2 = y_max - facial_area[1]
+        facial_area_y1 = y_max - facial_area[3]
+        facial_area[1] = facial_area_y1
+        facial_area[3] = facial_area_y2
+
+        # Invert the Y coordinates of landmarks
+        # right_eye
+        right_eye = detected_face["landmarks"]["left_eye"]
+        right_eye[1] = y_max - right_eye[1]
+        # left_eye
+        left_eye = detected_face["landmarks"]["right_eye"]
+        left_eye[1] = y_max - left_eye[1]
+        # nose
+        nose = detected_face["landmarks"]["nose"]
+        nose[1] = y_max - nose[1]
+        # mouth_right
+        mouth_right = detected_face["landmarks"]["mouth_left"]
+        mouth_right[1] = y_max - mouth_right[1]
+        # mouth_left
+        mouth_left = detected_face["landmarks"]["mouth_right"]
+        mouth_left[1] = y_max - mouth_left[1]
+
+    # Flip horizontally
+    if (flip_code == 1) or (flip_code == -1):
+        # Invert the X coordinates of facial_area
+        facial_area_x2 = x_max - facial_area[0]
+        facial_area_x1 = x_max - facial_area[2]
+        facial_area[0] = facial_area_x1
+        facial_area[2] = facial_area_x2
+
+        # Invert the X coordinates of landmarks
+        # right_eye
+        right_eye = detected_face["landmarks"]["left_eye"]
+        right_eye[0] = x_max - right_eye[0]
+        # left_eye
+        left_eye = detected_face["landmarks"]["right_eye"]
+        left_eye[0] = x_max - left_eye[0]
+        # nose
+        nose = detected_face["landmarks"]["nose"]
+        nose[0] = x_max - nose[0]
+        # mouth_right
+        mouth_right = detected_face["landmarks"]["mouth_left"]
+        mouth_right[0] = x_max - mouth_right[0]
+        # mouth_left
+        mouth_left = detected_face["landmarks"]["mouth_right"]
+        mouth_left[0] = x_max - mouth_left[0]
+
+    return {
+        "facial_area": facial_area,
+        "landmarks": {
+            "right_eye": right_eye,
+            "left_eye": left_eye,
+            "nose": nose,
+            "mouth_right": mouth_right,
+            "mouth_left": mouth_left,
+        },
+    }
+
+
 def analyze_and_anonymize_frame(
     frame: np.ndarray,
     headcount_segment: dict,
@@ -281,53 +331,69 @@ def analyze_and_anonymize_frame(
         threshold=config["FACE_DETECTION_THRESHOLD"],
     )
 
-    # If no faces were detected
-    if len(detected_faces) == 0:
-        # Flip the image vertically and check again for detection
-        flipped_frame = cv2.flip(src=frame, flipCode=0)
-        flipped_detected_faces = RetinaFace.detect_faces(
-            img_path=flipped_frame,
-            threshold=config["FACE_DETECTION_THRESHOLD"],
-        )
-        # If faces were detected on the flipped image
-        if len(flipped_detected_faces) > 0:
+    if config["CHECK_ALL_FLIPS"] or (
+        len(detected_faces) < len(headcount_segment["headcount"])
+    ):
+        # Start from a horizontal flip
+        current_flip_code = 1
 
-            # Unflip all the detected faces correcting its features
-            for face_id, detected_face in flipped_detected_faces.items():
-                # facial_area
-                facial_area = detected_face["facial_area"]
-                y2 = frame_height - facial_area[1]
-                y1 = frame_height - facial_area[3]
-                facial_area[1] = y1
-                facial_area[3] = y2
-                # right_eye
-                right_eye = detected_face["landmarks"]["left_eye"]
-                right_eye[1] = frame_height - right_eye[1]
-                # left_eye
-                left_eye = detected_face["landmarks"]["right_eye"]
-                left_eye[1] = frame_height - left_eye[1]
-                # nose
-                nose = detected_face["landmarks"]["nose"]
-                nose[1] = frame_height - nose[1]
-                # mouth_right
-                mouth_right = detected_face["landmarks"]["mouth_left"]
-                mouth_right[1] = frame_height - mouth_right[1]
-                # mouth_left
-                mouth_left = detected_face["landmarks"]["mouth_right"]
-                mouth_left[1] = frame_height - mouth_left[1]
+        # Loop through all the flip codes
+        while current_flip_code >= -1:
 
-                # Assemble the unflipped face and add it to the detected faces
-                detected_faces[face_id] = {
-                    "score": detected_face["score"],
-                    "facial_area": facial_area,
-                    "landmarks": {
-                        "right_eye": right_eye,
-                        "left_eye": left_eye,
-                        "nose": nose,
-                        "mouth_right": mouth_right,
-                        "mouth_left": mouth_left,
-                    },
-                }
+            # Flip the image and check again for detection
+            flipped_frame = cv2.flip(src=frame, flipCode=current_flip_code)
+            flipped_detected_faces = RetinaFace.detect_faces(
+                img_path=flipped_frame,
+                threshold=config["FACE_DETECTION_THRESHOLD"],
+            )
+
+            # If faces were detected on the flipped image
+            if len(flipped_detected_faces) > 0:
+
+                # Unflip all the detected faces and ad them if not repeated
+                for flipped_detected_face in flipped_detected_faces.values():
+
+                    unflipped_face = flip_coordinates(
+                        frame_height=frame_height,
+                        frame_width=frame_width,
+                        detected_face=flipped_detected_face,
+                        flip_code=current_flip_code,
+                    )
+
+                    is_new_face = True
+                    for detected_face in detected_faces.values():
+                        facial_area_iou = calculate_iou(
+                            box1=unflipped_face["facial_area"],
+                            box2=detected_face["facial_area"],
+                        )
+
+                        if facial_area_iou > config["MIN_FACIAL_AREA_IOU"]:
+                            is_new_face = False
+
+                    if is_new_face:
+                        # Assemble the unflipped face and add it to the detected faces
+                        detected_faces[f"face_{len(detected_faces) + 1}"] = {
+                            "score": flipped_detected_face["score"],
+                            "facial_area": unflipped_face["facial_area"],
+                            "landmarks": {
+                                "right_eye": unflipped_face["landmarks"]["right_eye"],
+                                "left_eye": unflipped_face["landmarks"]["left_eye"],
+                                "nose": unflipped_face["landmarks"]["nose"],
+                                "mouth_right": unflipped_face["landmarks"][
+                                    "mouth_right"
+                                ],
+                                "mouth_left": unflipped_face["landmarks"]["mouth_left"],
+                            },
+                        }
+
+                if (not config["CHECK_ALL_FLIPS"]) and (
+                    len(detected_faces) >= len(headcount_segment["headcount"])
+                ):
+                    # Exit while loop
+                    break
+
+            # Set the next flipCode
+            current_flip_code -= 1
 
     # If faces were detected
     if len(detected_faces) > 0:
@@ -345,7 +411,7 @@ def analyze_and_anonymize_frame(
                     continue
 
                 # If this person's face data hasn't been updated yet
-                if person["facial_area"] is None:
+                if person["face_usage_count"] == 0:
 
                     avg_landmark_distance = calculate_avg_landmark_distance(
                         person_landmarks=person["landmarks"],
@@ -387,13 +453,6 @@ def analyze_and_anonymize_frame(
 
             if matched_person_id is not None:
 
-                # Remove the pixel gap between the facial_area and the frame border introduced by RetinaFace
-                remove_frame_border_gap(
-                    detected_face=detected_face,
-                    frame_width=frame_width,
-                    frame_height=frame_height,
-                )
-
                 # Save the person's id in the face dict
                 detected_face["person_id"] = matched_person_id
 
@@ -422,8 +481,22 @@ def analyze_and_anonymize_frame(
 
             # Iterate through the missing persons to check if their previous facial data exists and can be used
             for index, person_id in enumerate(missing_person_ids, start=1):
+                """
+                Doesn't make sense, because the objective is to blur the face.
+                A limit would mean that maybe there are going to be frames without blurring.
+                Better to have a misaligned blur than none.
+                """
+                # If the reuse limit for the same face data hasn't been reached yet
+                if (
+                    tracked_persons[person_id]["face_usage_count"]
+                    < config["FACE_USAGE_LIMIT"]
+                ):
+                    """
+                    Not yet sure if this should be inside the following if condition.
+                    We are trying to not be more than X frames far from the original position.
+                    """
+                    tracked_persons[person_id]["face_usage_count"] += 1
 
-                if tracked_persons[person_id]["facial_area"] is not None:
                     detected_faces[f"previous_{index}"] = {
                         "score": config["MAX_CONFIDENCE_SCORE"],
                         "facial_area": tracked_persons[person_id]["facial_area"],
@@ -436,34 +509,55 @@ def analyze_and_anonymize_frame(
             for detected_face in detected_faces.values():
                 x1, y1, x2, y2 = detected_face["facial_area"]
 
-                # Blur the detected face region
-                frame[y1:y2, x1:x2] = cv2.GaussianBlur(
-                    src=frame[y1:y2, x1:x2],
-                    ksize=(51, 51),
-                    sigmaX=30,
-                )
+                x1_padded = x1 - config["RECTANGLE_PADDING"]
+                y1_padded = y1 - config["RECTANGLE_PADDING"]
+                x2_padded = x2 + config["RECTANGLE_PADDING"]
+                y2_padded = y2 + config["RECTANGLE_PADDING"]
 
-                # Print the person id in bold and white font
-                person_id = detected_face["person_id"]
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 1.0
-                thickness = 2
-                color = (255, 255, 255)  # White color
-                text_size, _ = cv2.getTextSize(
-                    str(person_id), font, font_scale, thickness
-                )
-                text_x = x1 + (x2 - x1 - text_size[0]) // 2
-                text_y = y1 + (y2 - y1 + text_size[1]) // 2
-                cv2.putText(
-                    img=frame,
-                    text=f"{person_id}",
-                    org=(text_x, text_y),
-                    fontFace=font,
-                    fontScale=font_scale,
-                    color=color,
-                    thickness=thickness,
-                    lineType=cv2.LINE_AA,
-                )
+                if config["BLUR_RECTANGLE"]:
+                    frame[y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)] = (
+                        cv2.GaussianBlur(
+                            src=frame[
+                                y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)
+                            ],
+                            ksize=(
+                                config["BLUR_KERNEL_LENGTH"],
+                                config["BLUR_KERNEL_LENGTH"],
+                            ),
+                            sigmaX=config["BLUR_SIGMA_AMOUNT"],
+                        )
+                    )
+                else:
+                    frame[y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)] = (
+                        config["RECTANGLE_COLOR"]
+                    )
+
+                if config["SHOW_PERSON_ID"]:
+
+                    person_id = detected_face["person_id"]
+
+                    font_face = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 1.0
+                    text_thickness = 2
+                    text_size, _ = cv2.getTextSize(
+                        text=str(person_id),
+                        fontFace=font_face,
+                        fontScale=font_scale,
+                        thickness=text_thickness,
+                    )
+                    text_x = x1 + (x2 - x1 - text_size[0]) // 2
+                    text_y = y1 + (y2 - y1 + text_size[1]) // 2
+
+                    cv2.putText(
+                        img=frame,
+                        text=f"{person_id}",
+                        org=(text_x, text_y),
+                        fontFace=font_face,
+                        fontScale=font_scale,
+                        color=(255, 255, 255),  # White color
+                        thickness=text_thickness,
+                        lineType=cv2.LINE_AA,
+                    )
 
         # Revert the color space back to RGB8
         frame = cv2.cvtColor(src=frame, code=cv2.COLOR_BGR2RGB)
@@ -472,33 +566,6 @@ def analyze_and_anonymize_frame(
 
     else:
         return None
-
-
-def remove_frame_border_gap(
-    detected_face: dict,
-    frame_width: int,
-    frame_height: int,
-) -> None:
-    # Ensure the facial area touches the frame border
-    for landmark in detected_face["landmarks"].values():
-        x, y = landmark
-        if x < 0:
-            detected_face["facial_area"][0] = 0
-        elif x > frame_width:
-            detected_face["facial_area"][2] = frame_width
-        if y < 0:
-            detected_face["facial_area"][1] = 0
-        elif y > frame_height:
-            detected_face["facial_area"][3] = frame_height
-
-    if detected_face["facial_area"][0] == 1:
-        detected_face["facial_area"][0] = 0
-    if detected_face["facial_area"][1] == 1:
-        detected_face["facial_area"][1] = 0
-    if detected_face["facial_area"][2] == frame_width - 1:
-        detected_face["facial_area"][2] = frame_width
-    if detected_face["facial_area"][3] == frame_height - 1:
-        detected_face["facial_area"][3] = frame_height
 
 
 def initialize_tracked_persons(
@@ -523,6 +590,7 @@ def initialize_tracked_persons(
                     "mouth_right": None,
                     "mouth_left": None,
                 },
+                "face_usage_count": 0,
             }
         )
 
@@ -531,6 +599,7 @@ def update_tracked_persons(
     tracked_persons: List[dict],
     headcount_change: dict = None,
     detected_faces: dict = None,
+    config: dict = None,
 ) -> None:
     # If the face data of entering or leaving persons has to be updated
     if headcount_change is not None:
@@ -540,6 +609,16 @@ def update_tracked_persons(
         if headcount_change["type"] == "enters":
             # Person's facial landmarks that were manually obtained
             manual_landmarks = headcount_change["person"]["landmarks"]
+            """
+            Not sure if I should calculate a facial area, for now is not needed.
+            It prevents the landmark distance calculation from being used.
+            It would only be useful if the face isn't detected in the first frames.
+            """
+            # Calculate an approximation of the facial area and add it to the person's data
+            tracked_persons[person_id]["facial_area"] = calculate_facial_area(
+                landmarks=manual_landmarks,
+                config=config,
+            )
             # Add the manually obtained landmarks to the person's data
             for landmark, coordinates in manual_landmarks.items():
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
@@ -551,7 +630,8 @@ def update_tracked_persons(
             old_landmarks = tracked_persons[person_id]["landmarks"]
             for landmark, coordinates in old_landmarks.items():
                 tracked_persons[person_id]["landmarks"][landmark] = None
-
+            # Reset the usage count
+            tracked_persons[person_id]["face_usage_count"] = 0
     # If the face data of detected persons has to be updated
     elif detected_faces is not None:
         for face_id, detected_face in detected_faces.items():
@@ -561,6 +641,33 @@ def update_tracked_persons(
             tracked_persons[person_id]["facial_area"] = detected_face["facial_area"]
             for landmark, coordinates in detected_face["landmarks"].items():
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
+            # Initialize the number of usages
+            tracked_persons[person_id]["face_usage_count"] = 1
+
+
+def calculate_facial_area(landmarks: dict, config: dict) -> List[int]:
+    # Initialize min and max values to None
+    x_min, y_min, x_max, y_max = None, None, None, None
+
+    # Iterate through the landmarks and update min and max values
+    for landmark in landmarks.values():
+        x, y = landmark
+        if x_min is None or x < x_min:
+            x_min = x
+        if y_min is None or y < y_min:
+            y_min = y
+        if x_max is None or x > x_max:
+            x_max = x
+        if y_max is None or y > y_max:
+            y_max = y
+
+    # Apply the margin to the calculated bounding box
+    x_min -= config["FACIAL_AREA_MARGIN"]
+    y_min -= config["FACIAL_AREA_MARGIN"]
+    x_max += config["FACIAL_AREA_MARGIN"]
+    y_max += config["FACIAL_AREA_MARGIN"]
+
+    return [x_min, y_min, x_max, y_max]
 
 
 def load_config_file(filename: str) -> dict:
@@ -681,7 +788,7 @@ def main():
     ]
 
     # Temporary benchmark for performance measurement
-    start_time = time.time()
+    dataset_processing_start_time = time.time()
 
     for bag_file_path in bag_file_paths:
         # Extract the file name from the selected path
@@ -701,9 +808,10 @@ def main():
         )
 
     # Calculate and display the duration of the process
-    end_time = time.time()
-    duration = (end_time - start_time) / 60
-    print(f"\nTime: {format(round(duration, 3))} minutes")
+    dataset_processing_duration = (time.time() - dataset_processing_start_time) / 60
+    print(
+        f"\nTotal processing time: {format(round(dataset_processing_duration, 3))} minutes"
+    )
 
 
 def process_bag_file(
@@ -712,9 +820,10 @@ def process_bag_file(
     input_bag_metadata: DataFrame,
     output_directory_path: Path,
 ):
+    bag_processing_start_time = time.time()
 
     # Open the input ROS bag file
-    input_bag = rosbag.Bag(input_bag_path, "r")
+    input_bag = rosbag.Bag(f=input_bag_path, mode="r")
 
     # Get the data and info topics of the color stream
     # . Initialize topic variables
@@ -760,25 +869,31 @@ def process_bag_file(
     # Minimum number of frames in an output bag
     min_output_bag_frames = color_stream_fps * config["MIN_OUTPUT_DURATION"]
 
-    # Determine undesired intervals
+    # Get the intervals to discard
     undesired_intervals = get_undesired_intervals(
         bag_metadata=input_bag_metadata,
         config=config,
         min_output_bag_frames=min_output_bag_frames,
     )
+    if len(undesired_intervals) > 0:
+        print("\nThe undesired frame intervals are:")
+        for interval in undesired_intervals:
+            print(f"\t{interval}")
+    else:
+        print("\nNo undesired frame intervals were registered")
 
-    # Determine desired intervals
+    # Get the intervals to save
     desired_intervals = get_desired_intervals(
         undesired_intervals=undesired_intervals,
         first_frame_number=first_frame_number,
         last_frame_number=last_frame_number,
         min_output_bag_frames=min_output_bag_frames,
     )
-    print("\nThe desired frame intervals are:")
-    for interval in desired_intervals:
-        print(f"\t{interval}")
 
     if len(desired_intervals) > 0:
+        print("\nThe desired frame intervals are:")
+        for interval in desired_intervals:
+            print(f"\t{interval}")
 
         # Initialize data structures for color stream processing
         tracked_persons = []  # Updated data of the persons appearing
@@ -916,7 +1031,7 @@ def process_bag_file(
                 if frame_number == current_desired_interval["start_frame"]:
                     interval = f"{current_desired_interval['start_frame']}, {current_desired_interval['end_frame']}"
                     print(
-                        f"\n\nProcessing of the desired interval [{interval}] has started."
+                        f"\nProcessing of the desired interval [{interval}] has started."
                     )
                 elif (len(undesired_intervals) > 0) and (
                     frame_number == current_undesired_interval["start_frame"]
@@ -959,6 +1074,7 @@ def process_bag_file(
                             update_tracked_persons(
                                 tracked_persons=tracked_persons,
                                 headcount_change=headcount_change,
+                                config=config,
                             )
 
                     # Only process the current message if persons appear in the stream segment
@@ -989,7 +1105,7 @@ def process_bag_file(
                                 encoding="rgb8",
                             )
 
-                            # Restore the message header values. Skip restoring the frame_id to prevent issues with newer SDK versions
+                            # Restore message header. Skip restoring frame_id to prevent issues with newer SDK versions
                             processed_ros_image.header.seq = frame_number
                             processed_ros_image.header.stamp = frame_timestamp
 
@@ -1063,17 +1179,22 @@ def process_bag_file(
         if writing_desired_frames:
             # Close the current output bag clip
             close_bag(bag=output_bag, bag_path=current_output_bag_path)
+    else:
+        print("\nNo desired frame intervals were found")
 
     # Close the input bag file
     input_bag.close()
     print(f"\nProcessing of the file '{input_bag_path.name}' has finished.")
+    # Calculate and display the duration of the process
+    bag_processing_duration = (time.time() - bag_processing_start_time) / 60
+    print(f"\nTotal time: {format(round(bag_processing_duration, 3))} minutes")
     print("\n------------------------------------------------------------")
 
 
 def close_bag(bag: rosbag.Bag, bag_path: Path) -> None:
 
     bag.close()
-    print(f"\nClosed bag file: {bag_path.name}")
+    print(f"\rClosed bag file: {bag_path.name}", end="", flush=True)
 
 
 if __name__ == "__main__":

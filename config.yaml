@@ -1,20 +1,26 @@
 # This is the configuration file
 
-MAX_LANDMARK_DISTANCE: 50  # Maximum allowable distance for landmarks
-
-FACE_DETECTION_THRESHOLD: 0.1  # Threshold for face detection confidence
-
-MAX_CONFIDENCE_SCORE: 1.0  # Maximum possible confidence score
-
-IGNORE_STAFF: false  # Whether to ignore staff in processing
-
-# Minimum output duration in seconds
-MIN_OUTPUT_DURATION: 3
+CHECK_ALL_FLIPS: true
+FACIAL_AREA_MARGIN: 40
+FACE_USAGE_LIMIT: 2
+MIN_FACIAL_AREA_IOU: 0.7
+MAX_LANDMARK_DISTANCE: 50  # Maximum allowable distance for comparing facial landmarks. If the distance between detected landmarks and known landmarks of a person exceeds this value, the match is rejected.
+FACE_DETECTION_THRESHOLD: 0.1  # Threshold for face detection confidence. Faces with a detection confidence lower than this value will not be considered for further processing.
+MAX_CONFIDENCE_SCORE: 1.0  # Maximum possible confidence score for face detection. A score of 1.0 indicates the highest confidence in the face detection.
+IGNORE_STAFF: false  # Whether to ignore hospital staff during processing. If set to 'true', the script will skip the detection and processing of staff members' faces.
+MIN_OUTPUT_DURATION: 3  # Minimum output duration in seconds for any resulting clip. Intervals shorter than this duration will be discarded to avoid creating excessively short clips.
+RECTANGLE_PADDING: 0  # The amount of padding (in pixels) added around the face rectangle when anonymizing, making the blurred area slightly larger than the detected face region.
+RECTANGLE_COLOR: [0, 0, 0] # BGR color
+SHOW_PERSON_ID: false  # When set to 'true', the script will display the person's ID on top of the anonymization rectangle (useful for debugging or tracking).
+PERSON_ID_COLOR: [255, 255, 255]  # BGR color
+BLUR_RECTANGLE: false
+BLUR_KERNEL_LENGTH: 51  # Size of the Gaussian blur kernel applied to anonymize faces. Higher values produce stronger blurring effects.
+BLUR_SIGMA_AMOUNT: 30  # Standard deviation (sigma) for the Gaussian blur. Higher values create a more pronounced blur.
 
 # Wound visibility settings
-KEEP_WOUND_FULLY_OUT: false  # Keep the wound completely out of the frame
-KEEP_WOUND_PARTIALLY_OUT: true  # Allow the wound to be partially out of the frame
-PARTIALLY_OUT_TOLERANCE: 1  # Tolerance level: 1: LIGHTLY, 2: MODERATELY, 3: HEAVILY
-KEEP_WOUND_BLURRY: false  # Keep blurry wounds in the frame
-KEEP_WOUND_COVERED: false  # Keep wounds that are covered in the frame
-KEEP_WOUND_NEAR_FACE: false  # Keep wounds that are near the face in the frame
+KEEP_WOUND_FULLY_OUT: false  # If set to 'false', frames where the wound is fully out of the frame will be discarded.
+KEEP_WOUND_PARTIALLY_OUT: true  # Allows frames where the wound is partially visible to be kept. If set to 'false', frames with partial visibility will be discarded.
+PARTIALLY_OUT_TOLERANCE: 1  # Specifies the tolerance level for partially visible wounds. Higher values allow more leniency in how much of the wound can be out of view (1: LIGHTLY, 2: MODERATELY, 3: HEAVILY).
+KEEP_WOUND_BLURRY: false  # If set to 'false', frames where the wound appears blurry will be discarded.
+KEEP_WOUND_COVERED: false  # If set to 'false', frames where the wound is covered by objects or bandages will be discarded.
+KEEP_WOUND_NEAR_FACE: false  # If set to 'false', frames where the wound is near the face will be discarded. Useful for cases where faces and wounds appear in proximity, affecting anonymization.
