@@ -486,12 +486,10 @@ def analyze_and_anonymize_frame(
 
                     # Format text in the desired multi-line structure
                     info_lines = [
-                        f"Person:",
-                        f"- ID: {person_id}",
-                        f"- Type: {person_type.lower()}",
-                        f"Area:",
-                        f"- Origin: {area_origin.lower()}",
-                        f"- Reuses: {area_reuse_count}"
+                        f"person_id: {person_id}",
+                        f"person_type: {person_type.lower()}",
+                        f"area_origin: {area_origin.lower()}",
+                        f"area_reuses: {area_reuse_count}"
                     ]
 
                     font_face = cv2.FONT_HERSHEY_SIMPLEX
@@ -499,16 +497,8 @@ def analyze_and_anonymize_frame(
                     line_thickness = 1
 
                     # Starting Y position (set as the top of the padded bounding box)
-                    text_y = y1_padded + 10  # Adjust to add some padding from the top
-
-                    # Calculate the X position (center-align the longest line of text)
-                    text_size, _ = cv2.getTextSize(
-                        text=max(info_lines, key=len),
-                        fontFace=font_face,
-                        fontScale=font_scale,
-                        thickness=line_thickness,
-                    )
-                    text_x = x1_padded + (x2_padded - x1_padded - text_size[0]) // 2
+                    text_y = y1_padded + config["BOX_PADDING"]
+                    text_x = x1_padded + config["BOX_PADDING"]
 
                     # Render each line of text with proper spacing
                     for line in info_lines:
