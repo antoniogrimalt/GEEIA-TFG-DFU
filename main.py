@@ -148,28 +148,6 @@ def is_frame_in_interval(frame: int, interval: dict) -> bool:
     return interval["start_frame"] <= frame <= interval["end_frame"]
 
 
-def create_output_bag(
-    input_bag_path: Path,
-    run_timestamp: str,
-    output_bag_clip: int,
-    output_directory_path: Path,
-) -> Tuple[rosbag.Bag, Path]:
-
-    output_bag_name = (
-        input_bag_path.stem
-        + "_EDIT-"
-        + run_timestamp
-        + "_CLIP-"
-        + str(output_bag_clip)
-        + input_bag_path.suffix
-    )
-
-    # Combine the new directory path and the new filename
-    output_bag_path = output_directory_path / output_bag_name
-
-    return rosbag.Bag(f=output_bag_path, mode="w"), output_bag_path
-
-
 def calculate_iou(box1: List[int], box2: List[int]) -> float:
 
     # Extract the coordinates for both bounding boxes
@@ -217,7 +195,7 @@ def calculate_avg_landmark_distance(
     return total_distance / valid_landmark_count if valid_landmark_count > 0 else None
 
 
-def flip_coordinates(
+def flip_face_coordinates(
     frame_height: int, frame_width: int, detected_face: dict, flip_code: int
 ) -> dict:
 
@@ -320,7 +298,7 @@ def analyze_and_anonymize_frame(
                 # Unflip all the detected faces and ad them if not repeated
                 for flipped_detected_face in flipped_detected_faces.values():
 
-                    unflipped_face = flip_coordinates(
+                    unflipped_face = flip_face_coordinates(
                         frame_height=frame_height,
                         frame_width=frame_width,
                         detected_face=flipped_detected_face,
@@ -368,6 +346,7 @@ def analyze_and_anonymize_frame(
         # Iterate over a snapshot of the detected_faces's items
         for face_id, detected_face in list(detected_faces.items()):
             matched_person_id = None
+            matched_person_type = None
             max_facial_area_iou = 0.0
             min_landmark_distance = float("inf")
 
@@ -377,8 +356,8 @@ def analyze_and_anonymize_frame(
                 if person["id"] in assigned_person_ids:
                     continue
 
-                # If this person's face data was manually specified
-                if person["is_user_defined"]:
+                # If this person's face data was manually defined
+                if person["face_manually_defined"]:
 
                     avg_landmark_distance = calculate_avg_landmark_distance(
                         person_landmarks=person["landmarks"],
@@ -388,6 +367,7 @@ def analyze_and_anonymize_frame(
                     if avg_landmark_distance is not None:
                         if avg_landmark_distance < config["MAX_LANDMARK_DISTANCE"]:
                             matched_person_id = person["id"]
+                            matched_person_type = person["type"]
                             break
 
                 elif person["facial_area"] is not None:
@@ -400,6 +380,7 @@ def analyze_and_anonymize_frame(
                     if facial_area_iou > max_facial_area_iou:
                         max_facial_area_iou = facial_area_iou
                         matched_person_id = person["id"]
+                        matched_person_type = person["type"]
 
                         # Secondary check using landmarks to refine the match
                         if matched_person_id is not None:
@@ -418,15 +399,15 @@ def analyze_and_anonymize_frame(
                                     min_landmark_distance = avg_landmark_distance
                                 else:
                                     matched_person_id = None
+                                    matched_person_type = None
 
             if matched_person_id is not None:
 
-                # Save the person's id in the face dict
+                # Save the person's tracking info in the face dict
+                detected_face["area_origin"] = "AUTO"
+                detected_face["area_reuse_count"] = 0
                 detected_face["person_id"] = matched_person_id
-
-                # Tracking info
-                detected_face["origin"] = "A"
-                detected_face["reuse_count"] = 0
+                detected_face["person_type"] = matched_person_type
 
                 # Add the matched person's id to the assigned set
                 assigned_person_ids.add(matched_person_id)
@@ -459,18 +440,16 @@ def analyze_and_anonymize_frame(
                     tracked_persons[person_id]["face_reuse_count"]
                     < config["MAX_FACE_REUSE_COUNT"]
                 ):
-                    """
-                    Evitar que esto se aplique a una cara definida manualmente que aun no se ha usado
-                    """
                     tracked_persons[person_id]["face_reuse_count"] += 1
 
                     detected_faces[f"previous_{index}"] = {
                         "score": 1.0,
                         "facial_area": tracked_persons[person_id]["facial_area"],
                         "landmarks": tracked_persons[person_id]["landmarks"],
+                        "area_origin": "MANUAL" if tracked_persons[person_id]["face_manually_defined"] else "AUTO",
+                        "area_reuse_count": tracked_persons[person_id]["face_reuse_count"],
                         "person_id": person_id,
-                        "origin": "M" if tracked_persons[person_id]["is_user_defined"] else "A",
-                        "reuse_count": tracked_persons[person_id]["face_reuse_count"]
+                        "person_type": tracked_persons[person_id]["type"],
                     }
 
         if len(detected_faces) > 0:
@@ -501,31 +480,59 @@ def analyze_and_anonymize_frame(
                 if config["DISPLAY_TRACKING_INFO"]:
 
                     person_id = detected_face["person_id"]
-                    origin = detected_face["origin"]
-                    reuse_count = detected_face["reuse_count"]
+                    person_type = detected_face["person_type"]
+                    area_origin = detected_face["area_origin"]
+                    area_reuse_count = detected_face["area_reuse_count"]
+
+                    # Format text in the desired multi-line structure
+                    info_lines = [
+                        f"Person:",
+                        f"- ID: {person_id}",
+                        f"- Type: {person_type.lower()}",
+                        f"Area:",
+                        f"- Origin: {area_origin.lower()}",
+                        f"- Reuses: {area_reuse_count}"
+                    ]
 
                     font_face = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.5
+                    font_scale = 0.35
                     line_thickness = 1
+
+                    # Starting Y position (set as the top of the padded bounding box)
+                    text_y = y1_padded + 10  # Adjust to add some padding from the top
+
+                    # Calculate the X position (center-align the longest line of text)
                     text_size, _ = cv2.getTextSize(
-                        text=f"p{person_id}.o{origin}.r{reuse_count}",
+                        text=max(info_lines, key=len),
                         fontFace=font_face,
                         fontScale=font_scale,
                         thickness=line_thickness,
                     )
                     text_x = x1_padded + (x2_padded - x1_padded - text_size[0]) // 2
-                    text_y = y1_padded + (y2_padded - y1_padded + text_size[1]) // 2
 
-                    cv2.putText(
-                        img=frame,
-                        text=f"p{person_id}.o{origin}.r{reuse_count}",
-                        org=(text_x, text_y),
-                        fontFace=font_face,
-                        fontScale=font_scale,
-                        color=tuple(config["TRACKING_INFO_COLOR"]),
-                        thickness=line_thickness,
-                        lineType=cv2.LINE_AA,
-                    )
+                    # Render each line of text with proper spacing
+                    for line in info_lines:
+                        text_size, _ = cv2.getTextSize(
+                            text=line,
+                            fontFace=font_face,
+                            fontScale=font_scale,
+                            thickness=line_thickness
+                        )
+
+                        # Draw each info line
+                        cv2.putText(
+                            img=frame,
+                            text=line,
+                            org=(text_x, text_y),
+                            fontFace=font_face,
+                            fontScale=font_scale,
+                            color=tuple(config["TRACKING_INFO_COLOR"]),
+                            thickness=line_thickness,
+                            lineType=cv2.LINE_AA,
+                        )
+
+                        # Update Y position for the next line
+                        text_y += text_size[1] + 5  # Adding 5 pixels of vertical spacing between lines
 
         # Revert the color space back to RGB8
         frame = cv2.cvtColor(src=frame, code=cv2.COLOR_BGR2RGB)
@@ -558,7 +565,7 @@ def initialize_tracked_persons(
                     "mouth_right": None,
                     "mouth_left": None,
                 },
-                "is_user_defined": False,
+                "face_manually_defined": False,
                 "face_reuse_count": 0,
             }
         )
@@ -589,7 +596,7 @@ def update_tracked_persons(
             # Initialize the number of uses
             tracked_persons[person_id]["face_reuse_count"] = -1
             # Mark the face data as user defined
-            tracked_persons[person_id]["is_user_defined"] = True
+            tracked_persons[person_id]["face_manually_defined"] = True
         # If the person left the scene
         elif headcount_change["type"] == "leaves":
             # Clear their facial_area
@@ -601,7 +608,7 @@ def update_tracked_persons(
             # Reset the reuse count
             tracked_persons[person_id]["face_reuse_count"] = 0
             # Reset the face data origin
-            tracked_persons[person_id]["is_user_defined"] = False
+            tracked_persons[person_id]["face_manually_defined"] = False
     # If the face data of detected persons has to be updated
     elif detected_faces is not None:
         for face_id, detected_face in detected_faces.items():
@@ -614,7 +621,7 @@ def update_tracked_persons(
             # Reset the reuse count
             tracked_persons[person_id]["face_reuse_count"] = 0
             # Mark the face data as detected by the model
-            tracked_persons[person_id]["is_user_defined"] = False
+            tracked_persons[person_id]["face_manually_defined"] = False
 
 
 def approximate_facial_area(landmarks: dict, config: dict) -> List[int]:
@@ -715,75 +722,32 @@ def select_dataset_path(project_path: Path, window: tkinter.Tk) -> Optional[Path
         return Path(dataset_path)
 
 
-def main():
+def create_output_bag(
+    input_bag_path: Path,
+    run_timestamp: str,
+    output_bag_clip: int,
+    output_directory_path: Path,
+) -> Tuple[rosbag.Bag, Path]:
 
-    # Initialize the Tkinter main window and hide it
-    main_window = tkinter.Tk()
-    main_window.withdraw()
-
-    # Load configuration from the YAML file
-    config = load_config_file("config.yaml")
-
-    # Load the Excel file containing the dataset metadata
-    dataset_metadata = load_metadata_file("dataset_metadata.xlsx")
-
-    # Project path
-    project_path = Path().resolve()
-
-    # Open a file dialog to select the BAG file
-    dataset_path = select_dataset_path(
-        project_path=project_path,
-        window=main_window,
+    output_bag_name = (
+        input_bag_path.stem
+        + "_EDIT-"
+        + run_timestamp
+        + "_CLIP-"
+        + str(output_bag_clip)
+        + input_bag_path.suffix
     )
 
-    # Exit the program if no file was selected
-    if dataset_path is None:
-        print("\nError: The dataset folder was not selected.")
+    # Combine the new directory path and the new filename
+    output_bag_path = output_directory_path / output_bag_name
 
-        # Exit the program
-        print(f"\nExiting the program.")
-        sys.exit()
-    else:
-        print(f"\nSelected dataset folder: {dataset_path}")
-        print("\n------------------------------------------------------------")
+    return rosbag.Bag(f=output_bag_path, mode="w"), output_bag_path
 
-    # Create the 'edits' folder if it doesn't exist
-    output_directory_path = dataset_path / "edits"
-    if not output_directory_path.exists():
-        output_directory_path.mkdir(parents=True)
 
-    # List all .bag files in the directory
-    bag_file_paths = [
-        bag_file_path
-        for bag_file_path in dataset_path.glob("*.bag")
-        if bag_file_path.is_file()
-    ]
+def close_bag(bag: rosbag.Bag, bag_path: Path) -> None:
 
-    # Temporary benchmark for performance measurement
-    dataset_processing_start_time = time.time()
-
-    for bag_file_path in bag_file_paths:
-        # Extract the file name from the selected path
-        bag_file_name = bag_file_path.name
-
-        print(f"\nProcessing of the file '{bag_file_name}' has started.")
-
-        bag_metadata = dataset_metadata[
-            dataset_metadata["bag_filename"] == bag_file_name
-        ]
-
-        process_bag_file(
-            config=config,
-            input_bag_path=bag_file_path,
-            input_bag_metadata=bag_metadata,
-            output_directory_path=output_directory_path,
-        )
-
-    # Calculate and display the duration of the process
-    dataset_processing_duration = (time.time() - dataset_processing_start_time) / 60
-    print(
-        f"\nTotal processing time: {format(round(dataset_processing_duration, 3))} minutes"
-    )
+    bag.close()
+    print(f"\rClosed bag file: {bag_path.name}", end="", flush=True)
 
 
 def process_bag_file(
@@ -797,6 +761,7 @@ def process_bag_file(
     # Open the input ROS bag file
     input_bag = rosbag.Bag(f=input_bag_path, mode="r")
 
+    print("\nRetrieving color stream data and info topics...")
     # Get the data and info topics of the color stream
     # . Initialize topic variables
     color_data_topic = None
@@ -816,6 +781,7 @@ def process_bag_file(
         if color_data_topic and color_info_topic:
             break
 
+    print("\nFinding first and last frame numbers of the color stream...")
     # Get the fps, the first and last frame numbers of the color stream
     # . Initialize
     color_stream_fps = None
@@ -838,9 +804,13 @@ def process_bag_file(
             # Continuously update the last frame number
             last_frame_number = msg.header.seq
 
+    print(f"\nFirst frame: {first_frame_number}, Last frame: {last_frame_number}")
+    print(f"Color stream FPS: {color_stream_fps}")
+
     # Minimum number of frames in an output bag
     min_output_bag_frames = color_stream_fps * config["MIN_OUTPUT_DURATION"]
 
+    print("\nCalculating undesired frame intervals...")
     # Get the intervals to discard
     undesired_intervals = get_undesired_intervals(
         bag_metadata=input_bag_metadata,
@@ -848,12 +818,13 @@ def process_bag_file(
         min_output_bag_frames=min_output_bag_frames,
     )
     if len(undesired_intervals) > 0:
-        print("\nThe undesired frame intervals are:")
+        print("The undesired frame intervals are:")
         for interval in undesired_intervals:
             print(f"\t{interval}")
     else:
-        print("\nNo undesired frame intervals were registered")
+        print("No undesired frame intervals were registered")
 
+    print("\nCalculating desired frame intervals...")
     # Get the intervals to save
     desired_intervals = get_desired_intervals(
         undesired_intervals=undesired_intervals,
@@ -863,7 +834,7 @@ def process_bag_file(
     )
 
     if len(desired_intervals) > 0:
-        print("\nThe desired frame intervals are:")
+        print("The desired frame intervals are:")
         for interval in desired_intervals:
             print(f"\t{interval}")
 
@@ -1152,21 +1123,86 @@ def process_bag_file(
             # Close the current output bag clip
             close_bag(bag=output_bag, bag_path=current_output_bag_path)
     else:
-        print("\nNo desired frame intervals were found")
+        print("No desired frame intervals were found")
 
     # Close the input bag file
     input_bag.close()
     print(f"\nProcessing of the file '{input_bag_path.name}' has finished.")
     # Calculate and display the duration of the process
     bag_processing_duration = (time.time() - bag_processing_start_time) / 60
-    print(f"\nTotal time: {format(round(bag_processing_duration, 3))} minutes")
+    print(f"\nProcessing time: {format(round(bag_processing_duration, 3))} minutes")
     print("\n------------------------------------------------------------")
 
 
-def close_bag(bag: rosbag.Bag, bag_path: Path) -> None:
+def main():
 
-    bag.close()
-    print(f"\rClosed bag file: {bag_path.name}", end="", flush=True)
+    # Initialize the Tkinter main window and hide it
+    main_window = tkinter.Tk()
+    main_window.withdraw()
+
+    # Load configuration from the YAML file
+    config = load_config_file("config.yaml")
+
+    # Load the Excel file containing the dataset metadata
+    dataset_metadata = load_metadata_file("dataset_metadata.xlsx")
+
+    # Project path
+    project_path = Path().resolve()
+
+    # Open a file dialog to select the BAG file
+    dataset_path = select_dataset_path(
+        project_path=project_path,
+        window=main_window,
+    )
+
+    # Exit the program if no file was selected
+    if dataset_path is None:
+        print("\nError: The dataset folder was not selected.")
+
+        # Exit the program
+        print(f"\nExiting the program.")
+        sys.exit()
+    else:
+        print(f"\nSelected dataset folder: {dataset_path}")
+        print("\n------------------------------------------------------------")
+
+    # Create the 'edits' folder if it doesn't exist
+    output_directory_path = dataset_path / "edits"
+    if not output_directory_path.exists():
+        output_directory_path.mkdir(parents=True)
+
+    # List all .bag files in the directory
+    bag_file_paths = [
+        bag_file_path
+        for bag_file_path in dataset_path.glob("*.bag")
+        if bag_file_path.is_file()
+    ]
+
+    # Temporary benchmark for performance measurement
+    dataset_processing_start_time = time.time()
+
+    for i, bag_file_path in enumerate(bag_file_paths, start=1):
+        # Extract the file name from the selected path
+        bag_file_name = bag_file_path.name
+
+        print(f"\nProcessing of the file '{bag_file_name}' has started.")
+
+        bag_metadata = dataset_metadata[
+            dataset_metadata["bag_filename"] == bag_file_name
+        ]
+
+        process_bag_file(
+            config=config,
+            input_bag_path=bag_file_path,
+            input_bag_metadata=bag_metadata,
+            output_directory_path=output_directory_path,
+        )
+
+    # Calculate and display the duration of the process
+    dataset_processing_duration = (time.time() - dataset_processing_start_time) / 60
+    print(
+        f"\nTotal processing time: {format(round(dataset_processing_duration, 3))} minutes"
+    )
 
 
 if __name__ == "__main__":
