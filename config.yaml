@@ -1,26 +1,35 @@
-# This is the configuration file
+# Wound Visibility Settings
+KEEP_WOUND_FULLY_OUT: false  # If set to 'false', frames where the wound is fully out of the frame will be discarded. (boolean)
+KEEP_WOUND_PARTIALLY_OUT: true  # If set to 'false', frames with partial visibility will be discarded. (boolean)
+PARTIALLY_OUT_TOLERANCE: 1  # Tolerance level for partially visible wounds. Higher values allow more leniency in how much of the wound can be out of view (1: LIGHTLY, 2: MODERATELY, 3: HEAVILY). (integer from 1 to 3)
+KEEP_WOUND_BLURRY: false  # If set to 'false', frames where the wound appears blurry will be discarded. (boolean)
+KEEP_WOUND_COVERED: false  # If set to 'false', frames where the wound is covered by objects or bandages will be discarded. (boolean)
+KEEP_WOUND_NEAR_FACE: false  # If set to 'false', frames where the wound is near the face will be discarded. (boolean)
 
-CHECK_ALL_FLIPS: true
-FACIAL_AREA_MARGIN: 40
-FACE_USAGE_LIMIT: 2
-MIN_FACIAL_AREA_IOU: 0.7
-MAX_LANDMARK_DISTANCE: 50  # Maximum allowable distance for comparing facial landmarks. If the distance between detected landmarks and known landmarks of a person exceeds this value, the match is rejected.
-FACE_DETECTION_THRESHOLD: 0.1  # Threshold for face detection confidence. Faces with a detection confidence lower than this value will not be considered for further processing.
-MAX_CONFIDENCE_SCORE: 1.0  # Maximum possible confidence score for face detection. A score of 1.0 indicates the highest confidence in the face detection.
-IGNORE_STAFF: false  # Whether to ignore hospital staff during processing. If set to 'true', the script will skip the detection and processing of staff members' faces.
-MIN_OUTPUT_DURATION: 3  # Minimum output duration in seconds for any resulting clip. Intervals shorter than this duration will be discarded to avoid creating excessively short clips.
-RECTANGLE_PADDING: 0  # The amount of padding (in pixels) added around the face rectangle when anonymizing, making the blurred area slightly larger than the detected face region.
-RECTANGLE_COLOR: [0, 0, 0] # BGR color
-SHOW_PERSON_ID: false  # When set to 'true', the script will display the person's ID on top of the anonymization rectangle (useful for debugging or tracking).
-PERSON_ID_COLOR: [255, 255, 255]  # BGR color
-BLUR_RECTANGLE: false
-BLUR_KERNEL_LENGTH: 51  # Size of the Gaussian blur kernel applied to anonymize faces. Higher values produce stronger blurring effects.
-BLUR_SIGMA_AMOUNT: 30  # Standard deviation (sigma) for the Gaussian blur. Higher values create a more pronounced blur.
+# Output Bag Settings
+MIN_OUTPUT_DURATION: 3  # Minimum duration (in seconds) of any output bag file. Frame intervals shorter than this duration will be discarded. (integer greater than 0)
 
-# Wound visibility settings
-KEEP_WOUND_FULLY_OUT: false  # If set to 'false', frames where the wound is fully out of the frame will be discarded.
-KEEP_WOUND_PARTIALLY_OUT: true  # Allows frames where the wound is partially visible to be kept. If set to 'false', frames with partial visibility will be discarded.
-PARTIALLY_OUT_TOLERANCE: 1  # Specifies the tolerance level for partially visible wounds. Higher values allow more leniency in how much of the wound can be out of view (1: LIGHTLY, 2: MODERATELY, 3: HEAVILY).
-KEEP_WOUND_BLURRY: false  # If set to 'false', frames where the wound appears blurry will be discarded.
-KEEP_WOUND_COVERED: false  # If set to 'false', frames where the wound is covered by objects or bandages will be discarded.
-KEEP_WOUND_NEAR_FACE: false  # If set to 'false', frames where the wound is near the face will be discarded. Useful for cases where faces and wounds appear in proximity, affecting anonymization.
+# Manual Facial Area Settings
+MANUAL_AREA_PADDING: 40  # Padding (in pixels) applied around manually defined facial landmarks to approximate the facial_area when the face isn't detected. (integer, positive or 0)
+
+# Face Detection Settings
+CHECK_ALL_FLIPS: false  # Whether to check all flips (horizontal, vertical, both) for face detection. Use 'false' to skip checking flips unless faces aren't detected in the original frame. (boolean)
+FACE_DETECTION_THRESHOLD: 0.1  # Minimum confidence score for face detection. Only faces with a confidence score higher than this value will be processed. (float between 0.0 and 1.0)
+IGNORE_STAFF: false  # Whether to ignore detection of staff members. If set to 'true', staff faces will not be detected or anonymized. (boolean)
+
+# Face Matching Settings
+MIN_FACIAL_AREA_IOU: 0.7  # Minimum Intersection Over Union (IoU) threshold for comparing detected and known face bounding boxes. Higher values increase the strictness of bounding box matching. (float between 0.0 and 1.0)
+MAX_LANDMARK_DISTANCE: 50  # Maximum allowable distance (in pixels) between detected and known facial landmarks for a match to be considered valid. Smaller values mean stricter matching. (integer greater than 0)
+
+# Face Reuse Settings
+LIMIT_FACE_REUSE: false  # Whether to limit the reuse of previously detected faces when faces aren't detected in a frame. (boolean)
+MAX_FACE_REUSE_COUNT: 2  # Maximum number of times a previously detected face can be reused before it's discarded. (integer greater than 0)
+
+# Anonymization Settings
+BOX_PADDING: 10  # Amount of padding (in pixels) around the detected face region when applying anonymization. (integer, positive or 0)
+BOX_COLOR: [0, 0, 0]  # Color of the anonymization box in BGR format when not using blur. (list of three integers between 0 and 255)
+BLUR_BOX: true  # If set to 'true', the face will be blurred instead of covered with a colored box. (boolean)
+BLUR_KERNEL_SIZE: [51, 51]  # Size of the Gaussian blur kernel. Larger values result in stronger blur. Must be odd integers. (list of two odd integers)
+BLUR_SIGMA: 30  # Sigma (standard deviation) of the Gaussian blur. Higher values result in a more pronounced blur. (float greater than 0)
+DISPLAY_TRACKING_INFO: true  # Whether to display the person's ID over the anonymized face. Useful for debugging. (boolean)
+TRACKING_INFO_COLOR: [255, 255, 255]  # Color of the person ID text in BGR format. (list of three integers between 0 and 255)

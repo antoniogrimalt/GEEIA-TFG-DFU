@@ -135,31 +135,17 @@ def get_desired_intervals(
         )
 
     # Filter out desired intervals that are shorter than the minimum duration
-    filtered_desired_intervals = [
+    return [
         interval
         for interval in desired_intervals
         if (interval["end_frame"] - interval["start_frame"] + 1)
         >= min_output_bag_frames
     ]
 
-    return filtered_desired_intervals
-
-
-def is_frame_in_intervals(frame: int, intervals: List[dict]) -> bool:
-
-    for interval in intervals:
-        if interval["start_frame"] <= frame <= interval["end_frame"]:
-            return True
-
-    return False
-
 
 def is_frame_in_interval(frame: int, interval: dict) -> bool:
 
-    if interval["start_frame"] <= frame <= interval["end_frame"]:
-        return True
-    else:
-        return False
+    return interval["start_frame"] <= frame <= interval["end_frame"]
 
 
 def create_output_bag(
@@ -208,10 +194,8 @@ def calculate_iou(box1: List[int], box2: List[int]) -> float:
     # Calculate the union area
     union_area = box1_area + box2_area - inter_area
 
-    # Calculate the Intersection over Union (IoU) metric
-    iou = inter_area / union_area
-
-    return iou
+    # Return IoU score
+    return inter_area / union_area if union_area > 0 else 0
 
 
 def calculate_avg_landmark_distance(
@@ -225,19 +209,12 @@ def calculate_avg_landmark_distance(
     for landmark, landmark_value in person_landmarks.items():
         if landmark_value is not None:
             detected_point = np.array(detected_landmarks[landmark])
-
             known_point = np.array(landmark_value)
-
             distance = np.linalg.norm(detected_point - known_point)
-
             total_distance += distance
             valid_landmark_count += 1
 
-    if valid_landmark_count > 0:
-        average_distance = total_distance / valid_landmark_count
-        return average_distance
-    else:
-        return None
+    return total_distance / valid_landmark_count if valid_landmark_count > 0 else None
 
 
 def flip_coordinates(
@@ -260,19 +237,14 @@ def flip_coordinates(
         facial_area[3] = facial_area_y2
 
         # Invert the Y coordinates of landmarks
-        # right_eye
         right_eye = detected_face["landmarks"]["left_eye"]
         right_eye[1] = y_max - right_eye[1]
-        # left_eye
         left_eye = detected_face["landmarks"]["right_eye"]
         left_eye[1] = y_max - left_eye[1]
-        # nose
         nose = detected_face["landmarks"]["nose"]
         nose[1] = y_max - nose[1]
-        # mouth_right
         mouth_right = detected_face["landmarks"]["mouth_left"]
         mouth_right[1] = y_max - mouth_right[1]
-        # mouth_left
         mouth_left = detected_face["landmarks"]["mouth_right"]
         mouth_left[1] = y_max - mouth_left[1]
 
@@ -285,19 +257,14 @@ def flip_coordinates(
         facial_area[2] = facial_area_x2
 
         # Invert the X coordinates of landmarks
-        # right_eye
         right_eye = detected_face["landmarks"]["left_eye"]
         right_eye[0] = x_max - right_eye[0]
-        # left_eye
         left_eye = detected_face["landmarks"]["right_eye"]
         left_eye[0] = x_max - left_eye[0]
-        # nose
         nose = detected_face["landmarks"]["nose"]
         nose[0] = x_max - nose[0]
-        # mouth_right
         mouth_right = detected_face["landmarks"]["mouth_left"]
         mouth_right[0] = x_max - mouth_right[0]
-        # mouth_left
         mouth_left = detected_face["landmarks"]["mouth_right"]
         mouth_left[0] = x_max - mouth_left[0]
 
@@ -410,8 +377,8 @@ def analyze_and_anonymize_frame(
                 if person["id"] in assigned_person_ids:
                     continue
 
-                # If this person's face data hasn't been updated yet
-                if person["face_usage_count"] == 0:
+                # If this person's face data was manually specified
+                if person["is_user_defined"]:
 
                     avg_landmark_distance = calculate_avg_landmark_distance(
                         person_landmarks=person["landmarks"],
@@ -422,7 +389,8 @@ def analyze_and_anonymize_frame(
                         if avg_landmark_distance < config["MAX_LANDMARK_DISTANCE"]:
                             matched_person_id = person["id"]
                             break
-                else:
+
+                elif person["facial_area"] is not None:
                     # Calculate IOU between the person's facial area and the detected facial area
                     facial_area_iou = calculate_iou(
                         box1=person["facial_area"],
@@ -456,6 +424,10 @@ def analyze_and_anonymize_frame(
                 # Save the person's id in the face dict
                 detected_face["person_id"] = matched_person_id
 
+                # Tracking info
+                detected_face["origin"] = "A"
+                detected_face["reuse_count"] = 0
+
                 # Add the matched person's id to the assigned set
                 assigned_person_ids.add(matched_person_id)
             else:
@@ -481,27 +453,24 @@ def analyze_and_anonymize_frame(
 
             # Iterate through the missing persons to check if their previous facial data exists and can be used
             for index, person_id in enumerate(missing_person_ids, start=1):
-                """
-                Doesn't make sense, because the objective is to blur the face.
-                A limit would mean that maybe there are going to be frames without blurring.
-                Better to have a misaligned blur than none.
-                """
+
                 # If the reuse limit for the same face data hasn't been reached yet
-                if (
-                    tracked_persons[person_id]["face_usage_count"]
-                    < config["FACE_USAGE_LIMIT"]
+                if (not config["LIMIT_FACE_REUSE"]) or (
+                    tracked_persons[person_id]["face_reuse_count"]
+                    < config["MAX_FACE_REUSE_COUNT"]
                 ):
                     """
-                    Not yet sure if this should be inside the following if condition.
-                    We are trying to not be more than X frames far from the original position.
+                    Evitar que esto se aplique a una cara definida manualmente que aun no se ha usado
                     """
-                    tracked_persons[person_id]["face_usage_count"] += 1
+                    tracked_persons[person_id]["face_reuse_count"] += 1
 
                     detected_faces[f"previous_{index}"] = {
-                        "score": config["MAX_CONFIDENCE_SCORE"],
+                        "score": 1.0,
                         "facial_area": tracked_persons[person_id]["facial_area"],
                         "landmarks": tracked_persons[person_id]["landmarks"],
                         "person_id": person_id,
+                        "origin": "M" if tracked_persons[person_id]["is_user_defined"] else "A",
+                        "reuse_count": tracked_persons[person_id]["face_reuse_count"]
                     }
 
         if len(detected_faces) > 0:
@@ -509,53 +478,52 @@ def analyze_and_anonymize_frame(
             for detected_face in detected_faces.values():
                 x1, y1, x2, y2 = detected_face["facial_area"]
 
-                x1_padded = x1 - config["RECTANGLE_PADDING"]
-                y1_padded = y1 - config["RECTANGLE_PADDING"]
-                x2_padded = x2 + config["RECTANGLE_PADDING"]
-                y2_padded = y2 + config["RECTANGLE_PADDING"]
+                x1_padded = max(x1 - config["BOX_PADDING"], 0)
+                y1_padded = max(y1 - config["BOX_PADDING"], 0)
+                x2_padded = min(x2 + config["BOX_PADDING"], frame_width - 1)
+                y2_padded = min(y2 + config["BOX_PADDING"], frame_height - 1)
 
-                if config["BLUR_RECTANGLE"]:
+                if config["BLUR_BOX"]:
                     frame[y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)] = (
                         cv2.GaussianBlur(
                             src=frame[
                                 y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)
                             ],
-                            ksize=(
-                                config["BLUR_KERNEL_LENGTH"],
-                                config["BLUR_KERNEL_LENGTH"],
-                            ),
-                            sigmaX=config["BLUR_SIGMA_AMOUNT"],
+                            ksize=tuple(config["BLUR_KERNEL_SIZE"]),
+                            sigmaX=config["BLUR_SIGMA"],
                         )
                     )
                 else:
                     frame[y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)] = (
-                        config["RECTANGLE_COLOR"]
+                        config["BOX_COLOR"]
                     )
 
-                if config["SHOW_PERSON_ID"]:
+                if config["DISPLAY_TRACKING_INFO"]:
 
                     person_id = detected_face["person_id"]
+                    origin = detected_face["origin"]
+                    reuse_count = detected_face["reuse_count"]
 
                     font_face = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 1.0
-                    text_thickness = 2
+                    font_scale = 0.5
+                    line_thickness = 1
                     text_size, _ = cv2.getTextSize(
-                        text=str(person_id),
+                        text=f"p{person_id}.o{origin}.r{reuse_count}",
                         fontFace=font_face,
                         fontScale=font_scale,
-                        thickness=text_thickness,
+                        thickness=line_thickness,
                     )
-                    text_x = x1 + (x2 - x1 - text_size[0]) // 2
-                    text_y = y1 + (y2 - y1 + text_size[1]) // 2
+                    text_x = x1_padded + (x2_padded - x1_padded - text_size[0]) // 2
+                    text_y = y1_padded + (y2_padded - y1_padded + text_size[1]) // 2
 
                     cv2.putText(
                         img=frame,
-                        text=f"{person_id}",
+                        text=f"p{person_id}.o{origin}.r{reuse_count}",
                         org=(text_x, text_y),
                         fontFace=font_face,
                         fontScale=font_scale,
-                        color=(255, 255, 255),  # White color
-                        thickness=text_thickness,
+                        color=tuple(config["TRACKING_INFO_COLOR"]),
+                        thickness=line_thickness,
                         lineType=cv2.LINE_AA,
                     )
 
@@ -590,7 +558,8 @@ def initialize_tracked_persons(
                     "mouth_right": None,
                     "mouth_left": None,
                 },
-                "face_usage_count": 0,
+                "is_user_defined": False,
+                "face_reuse_count": 0,
             }
         )
 
@@ -609,19 +578,18 @@ def update_tracked_persons(
         if headcount_change["type"] == "enters":
             # Person's facial landmarks that were manually obtained
             manual_landmarks = headcount_change["person"]["landmarks"]
-            """
-            Not sure if I should calculate a facial area, for now is not needed.
-            It prevents the landmark distance calculation from being used.
-            It would only be useful if the face isn't detected in the first frames.
-            """
-            # Calculate an approximation of the facial area and add it to the person's data
-            tracked_persons[person_id]["facial_area"] = calculate_facial_area(
+            # Create an approximation of the facial area and add it to the person's data
+            tracked_persons[person_id]["facial_area"] = approximate_facial_area(
                 landmarks=manual_landmarks,
                 config=config,
             )
             # Add the manually obtained landmarks to the person's data
             for landmark, coordinates in manual_landmarks.items():
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
+            # Initialize the number of uses
+            tracked_persons[person_id]["face_reuse_count"] = -1
+            # Mark the face data as user defined
+            tracked_persons[person_id]["is_user_defined"] = True
         # If the person left the scene
         elif headcount_change["type"] == "leaves":
             # Clear their facial_area
@@ -630,8 +598,10 @@ def update_tracked_persons(
             old_landmarks = tracked_persons[person_id]["landmarks"]
             for landmark, coordinates in old_landmarks.items():
                 tracked_persons[person_id]["landmarks"][landmark] = None
-            # Reset the usage count
-            tracked_persons[person_id]["face_usage_count"] = 0
+            # Reset the reuse count
+            tracked_persons[person_id]["face_reuse_count"] = 0
+            # Reset the face data origin
+            tracked_persons[person_id]["is_user_defined"] = False
     # If the face data of detected persons has to be updated
     elif detected_faces is not None:
         for face_id, detected_face in detected_faces.items():
@@ -641,31 +611,33 @@ def update_tracked_persons(
             tracked_persons[person_id]["facial_area"] = detected_face["facial_area"]
             for landmark, coordinates in detected_face["landmarks"].items():
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
-            # Initialize the number of usages
-            tracked_persons[person_id]["face_usage_count"] = 1
+            # Reset the reuse count
+            tracked_persons[person_id]["face_reuse_count"] = 0
+            # Mark the face data as detected by the model
+            tracked_persons[person_id]["is_user_defined"] = False
 
 
-def calculate_facial_area(landmarks: dict, config: dict) -> List[int]:
+def approximate_facial_area(landmarks: dict, config: dict) -> List[int]:
     # Initialize min and max values to None
     x_min, y_min, x_max, y_max = None, None, None, None
 
     # Iterate through the landmarks and update min and max values
     for landmark in landmarks.values():
         x, y = landmark
-        if x_min is None or x < x_min:
+        if (x_min is None) or (x < x_min):
             x_min = x
-        if y_min is None or y < y_min:
+        if (y_min is None) or (y < y_min):
             y_min = y
-        if x_max is None or x > x_max:
+        if (x_max is None) or (x > x_max):
             x_max = x
-        if y_max is None or y > y_max:
+        if (y_max is None) or (y > y_max):
             y_max = y
 
     # Apply the margin to the calculated bounding box
-    x_min -= config["FACIAL_AREA_MARGIN"]
-    y_min -= config["FACIAL_AREA_MARGIN"]
-    x_max += config["FACIAL_AREA_MARGIN"]
-    y_max += config["FACIAL_AREA_MARGIN"]
+    x_min -= config["MANUAL_AREA_PADDING"]
+    y_min -= config["MANUAL_AREA_PADDING"]
+    x_max += config["MANUAL_AREA_PADDING"]
+    y_max += config["MANUAL_AREA_PADDING"]
 
     return [x_min, y_min, x_max, y_max]
 
