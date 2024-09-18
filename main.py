@@ -487,18 +487,17 @@ def analyze_and_anonymize_frame(
                     # Format text in the desired multi-line structure
                     info_lines = [
                         f"person_id: {person_id}",
-                        f"person_type: {person_type.lower()}",
-                        f"area_origin: {area_origin.lower()}",
+                        f"person_type: {person_type[0]}",
+                        f"area_origin: {area_origin[0]}",
                         f"area_reuses: {area_reuse_count}"
                     ]
 
                     font_face = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.35
-                    line_thickness = 1
+                    font_scale = config["TRACKING_INFO_FONT_SIZE"]
+                    line_thickness = config["TRACKING_INFO_FONT_WEIGHT"]
 
-                    # Starting Y position (set as the top of the padded bounding box)
-                    text_y = y1_padded + config["BOX_PADDING"]
-                    text_x = x1_padded + config["BOX_PADDING"]
+                    text_y = y1_padded + 20
+                    text_x = x1_padded + 15
 
                     # Render each line of text with proper spacing
                     for line in info_lines:
@@ -516,7 +515,7 @@ def analyze_and_anonymize_frame(
                             org=(text_x, text_y),
                             fontFace=font_face,
                             fontScale=font_scale,
-                            color=tuple(config["TRACKING_INFO_COLOR"]),
+                            color=tuple(config["TRACKING_INFO_FONT_COLOR"]),
                             thickness=line_thickness,
                             lineType=cv2.LINE_AA,
                         )
@@ -751,7 +750,7 @@ def process_bag_file(
     # Open the input ROS bag file
     input_bag = rosbag.Bag(f=input_bag_path, mode="r")
 
-    print("\nRetrieving color stream data and info topics...")
+    print("\nRetrieving color stream topics...")
     # Get the data and info topics of the color stream
     # . Initialize topic variables
     color_data_topic = None
@@ -771,12 +770,19 @@ def process_bag_file(
         if color_data_topic and color_info_topic:
             break
 
-    print("\nFinding first and last frame numbers of the color stream...")
-    # Get the fps, the first and last frame numbers of the color stream
+    print(f"Color stream topics:")
+    print(f"\t- Data: {color_data_topic}")
+    print(f"\t- Info: {color_info_topic}")
+
+    print("\nFinding color stream info...")
+    # Get the fps, the first and last frame numbers, and timestamps of the color stream
     # . Initialize
     color_stream_fps = None
     first_frame_number = None
     last_frame_number = None
+    first_frame_timestamp = None
+    last_frame_timestamp = None
+    color_stream_duration = None
 
     # . Find the frame numbers and the fps
     for topic, msg, _ in input_bag.read_messages(
@@ -790,12 +796,21 @@ def process_bag_file(
             # Save the first frame number
             if first_frame_number is None:
                 first_frame_number = msg.header.seq
+                first_frame_timestamp = msg.header.stamp
 
-            # Continuously update the last frame number
+            # Continuously update the last frame number and timestamp
             last_frame_number = msg.header.seq
+            last_frame_timestamp = msg.header.stamp
 
-    print(f"\nFirst frame: {first_frame_number}, Last frame: {last_frame_number}")
-    print(f"Color stream FPS: {color_stream_fps}")
+    # Calculate the duration of the stream using the first and last timestamps
+    if first_frame_timestamp and last_frame_timestamp:
+        color_stream_duration = (last_frame_timestamp - first_frame_timestamp).to_sec()
+
+    print(f"Color stream info:")
+    print(f"\t- Duration: {round(color_stream_duration, 3)} seconds")
+    print(f"\t- FPS: {color_stream_fps}")
+    print(f"\t- First frame: {first_frame_number}")
+    print(f"\t- Last frame: {last_frame_number}")
 
     # Minimum number of frames in an output bag
     min_output_bag_frames = color_stream_fps * config["MIN_OUTPUT_DURATION"]
@@ -1168,14 +1183,19 @@ def main():
         if bag_file_path.is_file()
     ]
 
+    total_bag_files = len(bag_file_paths)
+
     # Temporary benchmark for performance measurement
     dataset_processing_start_time = time.time()
 
-    for i, bag_file_path in enumerate(bag_file_paths, start=1):
+    for file_index, bag_file_path in enumerate(bag_file_paths, start=1):
         # Extract the file name from the selected path
         bag_file_name = bag_file_path.name
 
-        print(f"\nProcessing of the file '{bag_file_name}' has started.")
+        if total_bag_files > 1:
+            print(f"\nProcessing file {file_index}/{total_bag_files}: '{bag_file_name}'")
+        else:
+            print(f"\nProcessing of the file '{bag_file_name}' has started.")
 
         bag_metadata = dataset_metadata[
             dataset_metadata["bag_filename"] == bag_file_name
@@ -1191,7 +1211,7 @@ def main():
     # Calculate and display the duration of the process
     dataset_processing_duration = (time.time() - dataset_processing_start_time) / 60
     print(
-        f"\nTotal processing time: {format(round(dataset_processing_duration, 3))} minutes"
+        f"\nTotal processing time: {round(dataset_processing_duration, 3)} minutes"
     )
 
 
