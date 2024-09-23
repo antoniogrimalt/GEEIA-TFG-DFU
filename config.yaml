@@ -1,7 +1,10 @@
+# Output Folder Setting
+OUTPUT_FOLDER_NAME: "edits"
+
 # Wound Visibility Settings
 KEEP_WOUND_FULLY_OUT: false  # If set to 'false', frames where the wound is fully out of the frame will be discarded. (boolean)
 KEEP_WOUND_PARTIALLY_OUT: true  # If set to 'false', frames with partial visibility will be discarded. (boolean)
-PARTIALLY_OUT_TOLERANCE: 1  # Tolerance level for partially visible wounds. Higher values allow more leniency in how much of the wound can be out of view (1: LIGHTLY, 2: MODERATELY, 3: HEAVILY). (integer from 1 to 3)
+PARTIALLY_OUT_TOLERANCE: 2  # Tolerance level for partially visible wounds. Higher values allow more leniency in how much of the wound can be out of view (1: LIGHTLY, 2: MODERATELY, 3: HEAVILY). (integer from 1 to 3)
 KEEP_WOUND_BLURRY: false  # If set to 'false', frames where the wound appears blurry will be discarded. (boolean)
 KEEP_WOUND_COVERED: false  # If set to 'false', frames where the wound is covered by objects or bandages will be discarded. (boolean)
 KEEP_WOUND_NEAR_FACE: false  # If set to 'false', frames where the wound is near the face will be discarded. (boolean)
@@ -10,10 +13,10 @@ KEEP_WOUND_NEAR_FACE: false  # If set to 'false', frames where the wound is near
 MIN_OUTPUT_DURATION: 3  # Minimum duration (in seconds) of any output bag file. Frame intervals shorter than this duration will be discarded. (integer greater than 0)
 
 # Manual Facial Area Settings
-MANUAL_AREA_PADDING: 40  # Padding (in pixels) applied around manually defined facial landmarks to approximate the facial_area when the face isn't detected. (integer, positive or 0)
+MANUAL_AREA_PADDING: 30  # Padding (in pixels) applied around manually defined facial landmarks to approximate the facial_area when the face isn't detected. (integer, positive or 0)
 
 # Face Detection Settings
-CHECK_ALL_FLIPS: false  # Whether to check all flips (horizontal, vertical, both) for face detection. Use 'false' to skip checking flips unless faces aren't detected in the original frame. (boolean)
+CHECK_ALL_FLIPS: true  # Whether to check all flips (horizontal, vertical, both) for face detection. Use 'false' to skip checking flips unless faces aren't detected in the original frame. (boolean)
 FACE_DETECTION_THRESHOLD: 0.1  # Minimum confidence score for face detection. Only faces with a confidence score higher than this value will be processed. (float between 0.0 and 1.0)
 IGNORE_STAFF: false  # Whether to ignore detection of staff members. If set to 'true', staff faces will not be detected or anonymized. (boolean)
 
@@ -23,17 +26,18 @@ MAX_LANDMARK_DISTANCE: 50  # Maximum allowable distance (in pixels) between dete
 
 # Face Reuse Settings
 LIMIT_FACE_REUSE: false  # Whether to limit the reuse of previously detected faces when faces aren't detected in a frame. (boolean)
-MAX_FACE_REUSE_COUNT: 2  # Maximum number of times a previously detected face can be reused before it's discarded. (integer greater than 0)
+MAX_FACE_REUSE_COUNT: 1  # Maximum number of times a previously detected face can be reused before it's discarded. (integer greater than 0)
 
-# Anonymization Settings
+# Anonymization Box Settings
 BOX_PADDING: 20  # Amount of padding (in pixels) around the detected face region when applying anonymization. (integer, positive or 0)
 BOX_COLOR: [0, 0, 0]  # Color of the anonymization box in BGR format when not using blur. (list of three integers between 0 and 255)
 BLUR_BOX: true  # If set to 'true', the face will be blurred instead of covered with a colored box. (boolean)
 BLUR_KERNEL_SIZE: [51, 51]  # Size of the Gaussian blur kernel. Larger values result in stronger blur. Must be odd integers. (list of two odd integers)
 BLUR_SIGMA: 30  # Sigma (standard deviation) of the Gaussian blur. Higher values result in a more pronounced blur. (float greater than 0)
+BOUNDARY_PROXIMITY_LIMIT: 4 # If the distance (in pixels) between the facial_area and the frame boundary is less than this amount, the facial_area is extended to cover the gap. (integer greater than 0)
 
 # Tracking Info Settings
 DISPLAY_TRACKING_INFO: true  # Whether to display the person's tracking info over the anonymized face. Useful for debugging. (boolean)
 TRACKING_INFO_FONT_COLOR: [255, 255, 255]  # Color of the person's tracking info text in BGR format. (list of three integers between 0 and 255)
-TRACKING_INFO_FONT_SIZE: 0.35  # Font scale for displaying tracking info. (float greater than 0)
+TRACKING_INFO_FONT_SIZE: 0.38  # Font scale for displaying tracking info. (float greater than 0)
 TRACKING_INFO_FONT_WEIGHT: 1  # Line thickness for displaying tracking info. (integer, positive or 0)

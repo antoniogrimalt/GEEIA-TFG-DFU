@@ -22,17 +22,11 @@ import logging
 logging.getLogger("rosout").setLevel(logging.ERROR)
 import rosbag
 
-
 BAG_INITIALIZATION_TIME = Time(nsecs=1)  # Publish time of RealSense metadata
 BAG_SENSORS_START_TIME = Time(nsecs=20000)  # Publish start time of sensors
 
 
-def get_undesired_intervals(
-    bag_metadata: pd.DataFrame,
-    config: dict,
-    min_output_bag_frames: float,
-) -> List[dict]:
-
+def get_undesired_intervals(bag_metadata: pd.DataFrame, config: dict, min_output_bag_frames: float) -> List[dict]:
     undesired_intervals = []
 
     wound_partially_out = bag_metadata["wound_partially_out"].values[0]
@@ -49,9 +43,7 @@ def get_undesired_intervals(
             filtered_intervals = partial_intervals
         else:
             filtered_intervals = [
-                interval
-                for interval in partial_intervals
-                if interval["degree"] > config["PARTIALLY_OUT_TOLERANCE"]
+                interval for interval in partial_intervals if interval["degree"] > config["PARTIALLY_OUT_TOLERANCE"]
             ]
 
         # Remove the 'degree' key from partial intervals
@@ -92,9 +84,7 @@ def get_undesired_intervals(
         if (current_interval["start_frame"] <= last_interval["end_frame"] + 1) or (
             frames_in_gap < min_output_bag_frames
         ):
-            last_interval["end_frame"] = max(
-                last_interval["end_frame"], current_interval["end_frame"]
-            )
+            last_interval["end_frame"] = max(last_interval["end_frame"], current_interval["end_frame"])
         else:
             combined_intervals.append(current_interval)
 
@@ -107,7 +97,6 @@ def get_desired_intervals(
     last_frame_number: int,
     min_output_bag_frames: float,
 ) -> List[dict]:
-
     desired_intervals = []
 
     # Initialize the start frame for the first desired interval
@@ -138,18 +127,42 @@ def get_desired_intervals(
     return [
         interval
         for interval in desired_intervals
-        if (interval["end_frame"] - interval["start_frame"] + 1)
-        >= min_output_bag_frames
+        if (interval["end_frame"] - interval["start_frame"] + 1) >= min_output_bag_frames
     ]
 
 
 def is_frame_in_interval(frame: int, interval: dict) -> bool:
-
     return interval["start_frame"] <= frame <= interval["end_frame"]
 
 
-def calculate_iou(box1: List[int], box2: List[int]) -> float:
+def is_tracking_required_for_interval(interval: dict, headcount_segments: List[dict]) -> bool:
+    # Check headcount at start_frame
+    for segment in headcount_segments:
+        if segment["start_frame"] <= interval["start_frame"] <= segment["end_frame"]:
+            if len(segment["headcount"]) > 0:
+                return True
+    # Check headcount at end_frame
+    for segment in headcount_segments:
+        if segment["start_frame"] <= interval["end_frame"] <= segment["end_frame"]:
+            if len(segment["headcount"]) > 0:
+                return True
 
+    return False
+
+
+def are_there_persons_in_interval(interval: dict, headcount_segments: List[dict]) -> bool:
+
+    for segment in headcount_segments:
+        # Check if the interval overlaps with this segment
+        if segment["start_frame"] <= interval["end_frame"] and segment["end_frame"] >= interval["start_frame"]:
+            # If headcount in the segment is greater than 0, there are people in the interval
+            if len(segment["headcount"]) > 0:
+                return True
+
+    return False
+
+
+def calculate_iou(box1: List[int], box2: List[int]) -> float:
     # Extract the coordinates for both bounding boxes
     x1_min, y1_min, x1_max, y1_max = box1
     x2_min, y2_min, x2_max, y2_max = box2
@@ -180,7 +193,6 @@ def calculate_avg_landmark_distance(
     person_landmarks: Dict[str, List[float]],
     detected_landmarks: Dict[str, List[float]],
 ) -> Optional[float]:
-
     total_distance = 0
     valid_landmark_count = 0
 
@@ -195,12 +207,7 @@ def calculate_avg_landmark_distance(
     return total_distance / valid_landmark_count if valid_landmark_count > 0 else None
 
 
-def flip_face_coordinates(
-    frame_height: int, frame_width: int, detected_face: dict, flip_code: int
-) -> dict:
-
-    y_max = frame_height - 1
-    x_max = frame_width - 1
+def flip_face_coordinates(boundary_height: int, boundary_width: int, detected_face: dict, flip_code: int) -> dict:
 
     facial_area = detected_face["facial_area"]
 
@@ -209,42 +216,42 @@ def flip_face_coordinates(
     # Flip vertically
     if (flip_code == 0) or (flip_code == -1):
         # Invert the Y coordinates of facial_area
-        facial_area_y2 = y_max - facial_area[1]
-        facial_area_y1 = y_max - facial_area[3]
+        facial_area_y2 = boundary_height - facial_area[1]
+        facial_area_y1 = boundary_height - facial_area[3]
         facial_area[1] = facial_area_y1
         facial_area[3] = facial_area_y2
 
         # Invert the Y coordinates of landmarks
         right_eye = detected_face["landmarks"]["left_eye"]
-        right_eye[1] = y_max - right_eye[1]
+        right_eye[1] = boundary_height - right_eye[1]
         left_eye = detected_face["landmarks"]["right_eye"]
-        left_eye[1] = y_max - left_eye[1]
+        left_eye[1] = boundary_height - left_eye[1]
         nose = detected_face["landmarks"]["nose"]
-        nose[1] = y_max - nose[1]
+        nose[1] = boundary_height - nose[1]
         mouth_right = detected_face["landmarks"]["mouth_left"]
-        mouth_right[1] = y_max - mouth_right[1]
+        mouth_right[1] = boundary_height - mouth_right[1]
         mouth_left = detected_face["landmarks"]["mouth_right"]
-        mouth_left[1] = y_max - mouth_left[1]
+        mouth_left[1] = boundary_height - mouth_left[1]
 
     # Flip horizontally
     if (flip_code == 1) or (flip_code == -1):
         # Invert the X coordinates of facial_area
-        facial_area_x2 = x_max - facial_area[0]
-        facial_area_x1 = x_max - facial_area[2]
+        facial_area_x2 = boundary_width - facial_area[0]
+        facial_area_x1 = boundary_width - facial_area[2]
         facial_area[0] = facial_area_x1
         facial_area[2] = facial_area_x2
 
         # Invert the X coordinates of landmarks
         right_eye = detected_face["landmarks"]["left_eye"]
-        right_eye[0] = x_max - right_eye[0]
+        right_eye[0] = boundary_width - right_eye[0]
         left_eye = detected_face["landmarks"]["right_eye"]
-        left_eye[0] = x_max - left_eye[0]
+        left_eye[0] = boundary_width - left_eye[0]
         nose = detected_face["landmarks"]["nose"]
-        nose[0] = x_max - nose[0]
+        nose[0] = boundary_width - nose[0]
         mouth_right = detected_face["landmarks"]["mouth_left"]
-        mouth_right[0] = x_max - mouth_right[0]
+        mouth_right[0] = boundary_width - mouth_right[0]
         mouth_left = detected_face["landmarks"]["mouth_right"]
-        mouth_left[0] = x_max - mouth_left[0]
+        mouth_left[0] = boundary_width - mouth_left[0]
 
     return {
         "facial_area": facial_area,
@@ -267,18 +274,15 @@ def analyze_and_anonymize_frame(
 ) -> Optional[np.ndarray]:
 
     frame_height, frame_width = frame.shape[:2]
+    boundary_height = frame_height - 1
+    boundary_width = frame_width - 1
 
     assigned_person_ids = set()
 
     # Detect faces using RetinaFace
-    detected_faces = RetinaFace.detect_faces(
-        img_path=frame,
-        threshold=config["FACE_DETECTION_THRESHOLD"],
-    )
+    detected_faces = RetinaFace.detect_faces(img_path=frame, threshold=config["FACE_DETECTION_THRESHOLD"])
 
-    if config["CHECK_ALL_FLIPS"] or (
-        len(detected_faces) < len(headcount_segment["headcount"])
-    ):
+    if config["CHECK_ALL_FLIPS"] or (len(detected_faces) < len(headcount_segment["headcount"])):
         # Start from a horizontal flip
         current_flip_code = 1
 
@@ -299,8 +303,8 @@ def analyze_and_anonymize_frame(
                 for flipped_detected_face in flipped_detected_faces.values():
 
                     unflipped_face = flip_face_coordinates(
-                        frame_height=frame_height,
-                        frame_width=frame_width,
+                        boundary_height=boundary_height,
+                        boundary_width=boundary_width,
                         detected_face=flipped_detected_face,
                         flip_code=current_flip_code,
                     )
@@ -324,16 +328,12 @@ def analyze_and_anonymize_frame(
                                 "right_eye": unflipped_face["landmarks"]["right_eye"],
                                 "left_eye": unflipped_face["landmarks"]["left_eye"],
                                 "nose": unflipped_face["landmarks"]["nose"],
-                                "mouth_right": unflipped_face["landmarks"][
-                                    "mouth_right"
-                                ],
+                                "mouth_right": unflipped_face["landmarks"]["mouth_right"],
                                 "mouth_left": unflipped_face["landmarks"]["mouth_left"],
                             },
                         }
 
-                if (not config["CHECK_ALL_FLIPS"]) and (
-                    len(detected_faces) >= len(headcount_segment["headcount"])
-                ):
+                if (not config["CHECK_ALL_FLIPS"]) and (len(detected_faces) >= len(headcount_segment["headcount"])):
                     # Exit while loop
                     break
 
@@ -356,8 +356,8 @@ def analyze_and_anonymize_frame(
                 if person["id"] in assigned_person_ids:
                     continue
 
-                # If this person's face data was manually defined
-                if person["face_manually_defined"]:
+                # If this person's face data was manually defined and hasn't been used yet
+                if person["face_manually_defined"] and (person["face_reuse_count"] == -1):
 
                     avg_landmark_distance = calculate_avg_landmark_distance(
                         person_landmarks=person["landmarks"],
@@ -372,10 +372,7 @@ def analyze_and_anonymize_frame(
 
                 elif person["facial_area"] is not None:
                     # Calculate IOU between the person's facial area and the detected facial area
-                    facial_area_iou = calculate_iou(
-                        box1=person["facial_area"],
-                        box2=detected_face["facial_area"],
-                    )
+                    facial_area_iou = calculate_iou(box1=person["facial_area"], box2=detected_face["facial_area"])
 
                     if facial_area_iou > max_facial_area_iou:
                         max_facial_area_iou = facial_area_iou
@@ -392,8 +389,7 @@ def analyze_and_anonymize_frame(
 
                             if avg_landmark_distance is not None:
                                 if (
-                                    avg_landmark_distance
-                                    < config["MAX_LANDMARK_DISTANCE"]
+                                    avg_landmark_distance < config["MAX_LANDMARK_DISTANCE"]
                                     and avg_landmark_distance < min_landmark_distance
                                 ):
                                     min_landmark_distance = avg_landmark_distance
@@ -417,7 +413,6 @@ def analyze_and_anonymize_frame(
 
         # If not all detected faces were deleted
         if len(detected_faces) > 0:
-
             # Update the face data of the persons present in the segment
             update_tracked_persons(
                 tracked_persons=tracked_persons,
@@ -437,8 +432,7 @@ def analyze_and_anonymize_frame(
 
                 # If the reuse limit for the same face data hasn't been reached yet
                 if (not config["LIMIT_FACE_REUSE"]) or (
-                    tracked_persons[person_id]["face_reuse_count"]
-                    < config["MAX_FACE_REUSE_COUNT"]
+                    tracked_persons[person_id]["face_reuse_count"] < config["MAX_FACE_REUSE_COUNT"]
                 ):
                     tracked_persons[person_id]["face_reuse_count"] += 1
 
@@ -446,7 +440,7 @@ def analyze_and_anonymize_frame(
                         "score": 1.0,
                         "facial_area": tracked_persons[person_id]["facial_area"],
                         "landmarks": tracked_persons[person_id]["landmarks"],
-                        "area_origin": "MANUAL" if tracked_persons[person_id]["face_manually_defined"] else "AUTO",
+                        "area_origin": ("MANUAL" if tracked_persons[person_id]["face_manually_defined"] else "AUTO"),
                         "area_reuse_count": tracked_persons[person_id]["face_reuse_count"],
                         "person_id": person_id,
                         "person_type": tracked_persons[person_id]["type"],
@@ -457,25 +451,30 @@ def analyze_and_anonymize_frame(
             for detected_face in detected_faces.values():
                 x1, y1, x2, y2 = detected_face["facial_area"]
 
+                # Add padding to the anonymization box making sure it doesn't extend beyond the frame boundary
                 x1_padded = max(x1 - config["BOX_PADDING"], 0)
                 y1_padded = max(y1 - config["BOX_PADDING"], 0)
-                x2_padded = min(x2 + config["BOX_PADDING"], frame_width - 1)
-                y2_padded = min(y2 + config["BOX_PADDING"], frame_height - 1)
+                x2_padded = min(x2 + config["BOX_PADDING"], boundary_width)
+                y2_padded = min(y2 + config["BOX_PADDING"], boundary_height)
+
+                # Remove gap between facial_area and frame boundary to make sure no face parts are visible
+                if x1_padded < config["BOUNDARY_PROXIMITY_LIMIT"]:
+                    x1_padded = 0
+                if y1_padded < config["BOUNDARY_PROXIMITY_LIMIT"]:
+                    y1_padded = 0
+                if x2_padded > boundary_width - config["BOUNDARY_PROXIMITY_LIMIT"]:
+                    x2_padded = boundary_width
+                if y2_padded > boundary_height - config["BOUNDARY_PROXIMITY_LIMIT"]:
+                    y2_padded = boundary_height
 
                 if config["BLUR_BOX"]:
-                    frame[y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)] = (
-                        cv2.GaussianBlur(
-                            src=frame[
-                                y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)
-                            ],
-                            ksize=tuple(config["BLUR_KERNEL_SIZE"]),
-                            sigmaX=config["BLUR_SIGMA"],
-                        )
+                    frame[y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)] = cv2.GaussianBlur(
+                        src=frame[y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)],
+                        ksize=tuple(config["BLUR_KERNEL_SIZE"]),
+                        sigmaX=config["BLUR_SIGMA"],
                     )
                 else:
-                    frame[y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)] = (
-                        config["BOX_COLOR"]
-                    )
+                    frame[y1_padded : (y2_padded + 1), x1_padded : (x2_padded + 1)] = config["BOX_COLOR"]
 
                 if config["DISPLAY_TRACKING_INFO"]:
 
@@ -486,18 +485,18 @@ def analyze_and_anonymize_frame(
 
                     # Format text in the desired multi-line structure
                     info_lines = [
-                        f"person_id: {person_id}",
-                        f"person_type: {person_type[0]}",
-                        f"area_origin: {area_origin[0]}",
-                        f"area_reuses: {area_reuse_count}"
+                        f"ID: {person_id}",
+                        # f"Type: {person_type.lower()}",
+                        f"Origin: {area_origin.lower()}",
+                        f"Reuses: {area_reuse_count}",
                     ]
 
                     font_face = cv2.FONT_HERSHEY_SIMPLEX
                     font_scale = config["TRACKING_INFO_FONT_SIZE"]
                     line_thickness = config["TRACKING_INFO_FONT_WEIGHT"]
 
-                    text_y = y1_padded + 20
-                    text_x = x1_padded + 15
+                    text_y = y1_padded + 18
+                    text_x = x1_padded + 9
 
                     # Render each line of text with proper spacing
                     for line in info_lines:
@@ -505,7 +504,7 @@ def analyze_and_anonymize_frame(
                             text=line,
                             fontFace=font_face,
                             fontScale=font_scale,
-                            thickness=line_thickness
+                            thickness=line_thickness,
                         )
 
                         # Draw each info line
@@ -521,7 +520,7 @@ def analyze_and_anonymize_frame(
                         )
 
                         # Update Y position for the next line
-                        text_y += text_size[1] + 5  # Adding 5 pixels of vertical spacing between lines
+                        text_y += text_size[1] + 6  # Adding 5 pixels of vertical spacing between lines
 
         # Revert the color space back to RGB8
         frame = cv2.cvtColor(src=frame, code=cv2.COLOR_BGR2RGB)
@@ -537,7 +536,6 @@ def initialize_tracked_persons(
     person_appearances: List[dict],
     ignore_staff: bool,
 ) -> None:
-
     for index, person in enumerate(person_appearances):
         if ignore_staff and person["type"] == "STAFF":
             continue
@@ -570,6 +568,7 @@ def update_tracked_persons(
     if headcount_change is not None:
         # Identifier of the person involved in the headcount change
         person_id = headcount_change["person"]["id"]
+
         # If the person entered the scene
         if headcount_change["type"] == "enters":
             # Person's facial landmarks that were manually obtained
@@ -582,22 +581,24 @@ def update_tracked_persons(
             # Add the manually obtained landmarks to the person's data
             for landmark, coordinates in manual_landmarks.items():
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
-            # Initialize the number of uses
-            tracked_persons[person_id]["face_reuse_count"] = -1
             # Mark the face data as user defined
             tracked_persons[person_id]["face_manually_defined"] = True
+            # Initialize the number of uses
+            tracked_persons[person_id]["face_reuse_count"] = -1
+
         # If the person left the scene
         elif headcount_change["type"] == "leaves":
-            # Clear their facial_area
+            # Reset the facial_area
             tracked_persons[person_id]["facial_area"] = None
-            # Clear their face landmarks
+            # Reset the face landmarks
             old_landmarks = tracked_persons[person_id]["landmarks"]
             for landmark, coordinates in old_landmarks.items():
                 tracked_persons[person_id]["landmarks"][landmark] = None
-            # Reset the reuse count
-            tracked_persons[person_id]["face_reuse_count"] = 0
-            # Reset the face data origin
+            # Reset the face origin
             tracked_persons[person_id]["face_manually_defined"] = False
+            # Reset the face reuse count
+            tracked_persons[person_id]["face_reuse_count"] = 0
+
     # If the face data of detected persons has to be updated
     elif detected_faces is not None:
         for face_id, detected_face in detected_faces.items():
@@ -607,10 +608,10 @@ def update_tracked_persons(
             tracked_persons[person_id]["facial_area"] = detected_face["facial_area"]
             for landmark, coordinates in detected_face["landmarks"].items():
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
-            # Reset the reuse count
-            tracked_persons[person_id]["face_reuse_count"] = 0
             # Mark the face data as detected by the model
             tracked_persons[person_id]["face_manually_defined"] = False
+            # Reset the reuse count
+            tracked_persons[person_id]["face_reuse_count"] = 0
 
 
 def approximate_facial_area(landmarks: dict, config: dict) -> List[int]:
@@ -639,7 +640,6 @@ def approximate_facial_area(landmarks: dict, config: dict) -> List[int]:
 
 
 def load_config_file(filename: str) -> dict:
-
     try:
         # Load configuration from the YAML file
         with open(filename, "r") as config_file:
@@ -647,30 +647,23 @@ def load_config_file(filename: str) -> dict:
 
         # Check if the config is None or empty
         if config is None or not config:
-            print(
-                f"\nError: The config file '{filename}' was loaded, but it contains no data."
-            )
+            print(f"\nError: The config file '{filename}' was loaded, but it contains no data.")
         else:
             return config
 
     except FileNotFoundError:
         print(f"\nError: The config file '{filename}' was not found.")
     except yaml.YAMLError as e:
-        print(
-            f"\nError: An issue occurred while parsing the config file '{filename}'.\n\tDetails: {e}"
-        )
+        print(f"\nError: An issue occurred while parsing the config file '{filename}'.\n\tDetails: {e}")
     except Exception as e:
-        print(
-            f"\nError: An issue occurred while loading the config file '{filename}'.\n\tDetails: {e}"
-        )
+        print(f"\nError: An issue occurred while loading the config file '{filename}'.\n\tDetails: {e}")
 
     # Exit the program
-    print(f"\nExiting the program.")
+    print(f"\nExiting the program...")
     sys.exit()
 
 
 def load_metadata_file(filename: str) -> DataFrame:
-
     try:
         # Load the Excel file containing the dataset metadata
         with pd.ExcelFile("dataset_metadata.xlsx") as xlsx:
@@ -678,21 +671,17 @@ def load_metadata_file(filename: str) -> DataFrame:
 
         # Check if the DataFrame is empty
         if dataset_metadata.empty:
-            print(
-                f"\nError: The metadata file '{filename}' was loaded, but it contains no data."
-            )
+            print(f"\nError: The metadata file '{filename}' was loaded, but it contains no data.")
         else:
             return dataset_metadata
 
     except FileNotFoundError:
         print(f"\nError: The metadata file '{filename}' was not found.")
     except Exception as e:
-        print(
-            f"\nError: An issue occurred while loading the metadata file '{filename}'.\n\tDetails: {e}"
-        )
+        print(f"\nError: An issue occurred while loading the metadata file '{filename}'.\n\tDetails: {e}")
 
     # Exit the program
-    print(f"\nExiting the program.")
+    print(f"\nExiting the program...")
     sys.exit()
 
 
@@ -719,12 +708,7 @@ def create_output_bag(
 ) -> Tuple[rosbag.Bag, Path]:
 
     output_bag_name = (
-        input_bag_path.stem
-        + "_EDIT-"
-        + run_timestamp
-        + "_CLIP-"
-        + str(output_bag_clip)
-        + input_bag_path.suffix
+        input_bag_path.stem + "_EDIT-" + run_timestamp + "_CLIP-" + str(output_bag_clip) + input_bag_path.suffix
     )
 
     # Combine the new directory path and the new filename
@@ -733,89 +717,80 @@ def create_output_bag(
     return rosbag.Bag(f=output_bag_path, mode="w"), output_bag_path
 
 
-def close_bag(bag: rosbag.Bag, bag_path: Path) -> None:
+def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFrame, output_directory_path: Path):
 
-    bag.close()
-    print(f"\rClosed bag file: {bag_path.name}", end="", flush=True)
-
-
-def process_bag_file(
-    config: dict,
-    input_bag_path: Path,
-    input_bag_metadata: DataFrame,
-    output_directory_path: Path,
-):
     bag_processing_start_time = time.time()
 
-    # Open the input ROS bag file
+    print(f"\nOpening bag file...")
     input_bag = rosbag.Bag(f=input_bag_path, mode="r")
+    print(f"Bag file opened successfully.")
 
-    print("\nRetrieving color stream topics...")
-    # Get the data and info topics of the color stream
-    # . Initialize topic variables
+    print(f"\nRetrieving camera info...")
+    camera_name = None
+    camera_firmware = None
+    for _, msg, _ in input_bag.read_messages(topics=["/device_0/info"], end_time=BAG_INITIALIZATION_TIME):
+        if msg.key == "Name":
+            camera_name = msg.value
+        elif msg.key == "Firmware Version":
+            camera_firmware = msg.value
+        if camera_name and camera_firmware:
+            break
+    print(f"Camera info:")
+    print(f"\t- Name: {camera_name}")
+    print(f"\t- Firmware: {camera_firmware}")
+
+    print("\nRetrieving color stream info...")
+    # Retrieve the color stream's data and info topics
     color_data_topic = None
     color_info_topic = None
-
-    # . Obtain the list of all topics in the bag file
-    input_bag_topics = input_bag.get_type_and_topic_info().topics.keys()
-
-    # . Find the data and info ones
-    for topic in input_bag_topics:
+    for topic in input_bag.get_type_and_topic_info().topics.keys():
         if topic.endswith("Color_0/info"):
             color_info_topic = topic
         elif "Color_0/image/data" in topic:
             color_data_topic = topic
-
-        # If both topics are found, no need to continue the loop
         if color_data_topic and color_info_topic:
             break
 
-    print(f"Color stream topics:")
-    print(f"\t- Data: {color_data_topic}")
-    print(f"\t- Info: {color_info_topic}")
-
-    print("\nFinding color stream info...")
-    # Get the fps, the first and last frame numbers, and timestamps of the color stream
-    # . Initialize
+    # Retrieve the color stream's resolution, encoding, FPS, and the first and last frame numbers with their timestamps
+    color_stream_resolution = None
+    color_stream_encoding = None
     color_stream_fps = None
     first_frame_number = None
     last_frame_number = None
     first_frame_timestamp = None
     last_frame_timestamp = None
-    color_stream_duration = None
-
-    # . Find the frame numbers and the fps
-    for topic, msg, _ in input_bag.read_messages(
-        topics=[color_data_topic, color_info_topic]
-    ):
+    for topic, msg, _ in input_bag.read_messages(topics=[color_data_topic, color_info_topic]):
         if topic == color_info_topic:
-            # Save the color stream fps
+            color_stream_encoding = msg.encoding
             color_stream_fps = msg.fps
-
         elif color_data_topic in topic:
-            # Save the first frame number
             if first_frame_number is None:
                 first_frame_number = msg.header.seq
                 first_frame_timestamp = msg.header.stamp
-
-            # Continuously update the last frame number and timestamp
+                color_stream_resolution = f"{msg.width}x{msg.height}"
             last_frame_number = msg.header.seq
             last_frame_timestamp = msg.header.stamp
 
-    # Calculate the duration of the stream using the first and last timestamps
+    # Calculate the color stream's duration using the first and last timestamps
+    color_stream_duration = None
     if first_frame_timestamp and last_frame_timestamp:
         color_stream_duration = (last_frame_timestamp - first_frame_timestamp).to_sec()
 
     print(f"Color stream info:")
-    print(f"\t- Duration: {round(color_stream_duration, 3)} seconds")
+    # print(f"\t- Data topic: {color_data_topic}")
+    # print(f"\t- Info topic: {color_info_topic}")
+    print(f"\t- Resolution: {color_stream_resolution}")
+    print(f"\t- Encoding: {color_stream_encoding.upper()}")
     print(f"\t- FPS: {color_stream_fps}")
-    print(f"\t- First frame: {first_frame_number}")
-    print(f"\t- Last frame: {last_frame_number}")
+    print(f"\t- Duration: {round(color_stream_duration, 2)} seconds")
+    print(f"\t- Frames:")
+    print(f"\t\t· First: {first_frame_number}")
+    print(f"\t\t· Last: {last_frame_number}")
 
     # Minimum number of frames in an output bag
     min_output_bag_frames = color_stream_fps * config["MIN_OUTPUT_DURATION"]
 
-    print("\nCalculating undesired frame intervals...")
+    print("\nCalculating undesired color frame intervals...")
     # Get the intervals to discard
     undesired_intervals = get_undesired_intervals(
         bag_metadata=input_bag_metadata,
@@ -823,13 +798,13 @@ def process_bag_file(
         min_output_bag_frames=min_output_bag_frames,
     )
     if len(undesired_intervals) > 0:
-        print("The undesired frame intervals are:")
+        print("Undesired color frame intervals:")
         for interval in undesired_intervals:
-            print(f"\t{interval}")
+            print(f"\t- {interval}")
     else:
-        print("No undesired frame intervals were registered")
+        print("No undesired color frame intervals were found")
 
-    print("\nCalculating desired frame intervals...")
+    print("\nCalculating desired color frame intervals...")
     # Get the intervals to save
     desired_intervals = get_desired_intervals(
         undesired_intervals=undesired_intervals,
@@ -839,18 +814,17 @@ def process_bag_file(
     )
 
     if len(desired_intervals) > 0:
-        print("The desired frame intervals are:")
+        print("Desired color frame intervals:")
         for interval in desired_intervals:
-            print(f"\t{interval}")
+            print(f"\t- {interval}")
+
+        # Get the current timestamp and format it
+        run_timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
 
         # Initialize data structures for color stream processing
         tracked_persons = []  # Updated data of the persons appearing
         headcount_changes = []  # List of the headcount changes during the stream
         headcount_segments = []  # Stream segmented by headcount changes
-
-        # Get the current timestamp and format it
-        run_timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-
         # Process person appearances if available
         person_appearances_cell = input_bag_metadata["person_appearances"].values[0]
         person_appearances = None
@@ -942,24 +916,40 @@ def process_bag_file(
 
         desired_interval_index = 0
         current_desired_interval = desired_intervals[desired_interval_index]
+        desired_interval_has_persons = are_there_persons_in_interval(
+            interval=current_desired_interval,
+            headcount_segments=headcount_segments,
+        )
 
         undesired_interval_index = None
         current_undesired_interval = None
+        undesired_interval_has_persons = False
+        undesired_interval_needs_tracking = False
         if len(undesired_intervals) > 0:
             undesired_interval_index = 0
             current_undesired_interval = undesired_intervals[undesired_interval_index]
+            if person_appearances is not None:
+                #
+                undesired_interval_has_persons = are_there_persons_in_interval(
+                    interval=current_undesired_interval,
+                    headcount_segments=headcount_segments,
+                )
+                #
+                undesired_interval_needs_tracking = is_tracking_required_for_interval(
+                    interval=current_undesired_interval,
+                    headcount_segments=headcount_segments,
+                )
 
         writing_desired_frames = False
-        bag_processing_finished = False
         clip_start_time = None
         output_bag = None
-        current_output_bag_path = None
         frame_number = None
-
+        frame_action = None
+        processed_cv_image = None
         # Iterate through all messages in the input bag file
         for topic, msg_raw, t in input_bag.read_messages(raw=True):
 
-            if (not bag_processing_finished) and (color_data_topic in topic):
+            if color_data_topic in topic:
 
                 # Unpack the message tuple
                 msg_type, serialized_bytes, md5sum, pos, pytype = msg_raw
@@ -972,86 +962,118 @@ def process_bag_file(
                 frame_number = deserialized_bytes.header.seq
                 frame_timestamp = deserialized_bytes.header.stamp
 
-                processed_cv_image = None
-                must_write_frame = False
-
                 # Update the current desired interval
-                if frame_number == current_desired_interval["start_frame"]:
-                    interval = f"{current_desired_interval['start_frame']}, {current_desired_interval['end_frame']}"
-                    print(
-                        f"\nProcessing of the desired interval [{interval}] has started."
-                    )
-                elif (len(undesired_intervals) > 0) and (
-                    frame_number == current_undesired_interval["start_frame"]
-                ):
-                    interval = f"{current_undesired_interval['start_frame']}, {current_undesired_interval['end_frame']}"
-                    print(
-                        f"\nTracking in the undesired interval [{interval}] has started."
-                    )
-                elif (frame_number > current_desired_interval["end_frame"]) and (
+                if (frame_number > current_desired_interval["end_frame"]) and (
                     desired_interval_index < len(desired_intervals) - 1
                 ):
                     desired_interval_index += 1
                     current_desired_interval = desired_intervals[desired_interval_index]
+                    #
+                    if person_appearances is not None:
+                        desired_interval_has_persons = are_there_persons_in_interval(
+                            interval=current_desired_interval,
+                            headcount_segments=headcount_segments,
+                        )
+
+                # Update the current undesired interval
                 elif (
                     (len(undesired_intervals) > 0)
                     and (frame_number > current_undesired_interval["end_frame"])
                     and (undesired_interval_index < len(undesired_intervals) - 1)
                 ):
                     undesired_interval_index += 1
-                    current_undesired_interval = undesired_intervals[
-                        undesired_interval_index
-                    ]
+                    current_undesired_interval = undesired_intervals[undesired_interval_index]
+                    #
+                    if person_appearances is not None:
+                        #
+                        undesired_interval_has_persons = are_there_persons_in_interval(
+                            interval=current_undesired_interval,
+                            headcount_segments=headcount_segments,
+                        )
+                        # Update tracking requirement
+                        undesired_interval_needs_tracking = is_tracking_required_for_interval(
+                            interval=current_undesired_interval,
+                            headcount_segments=headcount_segments,
+                        )
 
                 # If the current color frame is part of a desired interval
-                if is_frame_in_interval(frame_number, current_desired_interval):
-                    must_write_frame = True
+                frame_in_desired_interval = False
+                if is_frame_in_interval(frame=frame_number, interval=current_desired_interval):
+                    frame_in_desired_interval = True
+
+                # Notify the start of a desired interval
+                if frame_number == current_desired_interval["start_frame"]:
+
+                    frame_action = "Saving"
+                    interval_start = str(current_desired_interval["start_frame"])
+                    interval_end = str(current_desired_interval["end_frame"])
+
+                    interval_action = "..."
+                    if (person_appearances is not None) and desired_interval_has_persons:
+                        interval_action = "- Tracking and anonymizing persons in desired color frames..."
+
+                    if frame_number != first_frame_number:
+                        print()
+
+                    print(f"\nProcessing interval [{interval_start}, {interval_end}] {interval_action}")
+
+                # Notify the start of an undesired interval
+                elif (len(undesired_intervals) > 0) and (frame_number == current_undesired_interval["start_frame"]):
+
+                    frame_action = "Reading"
+                    interval_start = str(current_undesired_interval["start_frame"])
+                    interval_end = str(current_undesired_interval["end_frame"])
+
+                    interval_action = "..."
+                    if (
+                        person_appearances is not None
+                        and undesired_interval_has_persons
+                        and undesired_interval_needs_tracking
+                    ):
+                        interval_action = "- Tracking persons in undesired color frames..."
+
+                    print(f"\nProcessing interval [{interval_start}, {interval_end}] {interval_action}")
 
                 if person_appearances is not None:
-                    # Update the current segment of the stream if necessary
+                    # Update the current headcount segment of the stream
                     if frame_number > current_headcount_segment["end_frame"]:
                         headcount_segment_index += 1
-                        current_headcount_segment = headcount_segments[
-                            headcount_segment_index
-                        ]
+                        current_headcount_segment = headcount_segments[headcount_segment_index]
 
-                    # Check if the current frame has a headcount change to update the persons
-                    for headcount_change in headcount_changes:
-                        if frame_number == headcount_change["frame"]:
-                            # Insert or remove the facial data of the person involved in the headcount change
-                            update_tracked_persons(
+                    if frame_in_desired_interval or (
+                        not frame_in_desired_interval and undesired_interval_needs_tracking
+                    ):
+                        # Check if the current frame has a headcount change to update the persons
+                        for headcount_change in headcount_changes:
+                            if frame_number == headcount_change["frame"]:
+                                # Insert or remove the facial data of the person involved in the headcount change
+                                update_tracked_persons(
+                                    tracked_persons=tracked_persons,
+                                    headcount_change=headcount_change,
+                                    config=config,
+                                )
+
+                        # Process the image there are persons in it to track and/or anonymize
+                        if len(current_headcount_segment["headcount"]) != 0:
+                            # Convert the ROS Image message to an OpenCV image
+                            cv_image = bridge.imgmsg_to_cv2(img_msg=deserialized_bytes, desired_encoding="bgr8")
+
+                            # Process the image to keep track of the persons appearing and blur their faces
+                            processed_cv_image = analyze_and_anonymize_frame(
+                                frame=cv_image,
+                                headcount_segment=current_headcount_segment,
                                 tracked_persons=tracked_persons,
-                                headcount_change=headcount_change,
                                 config=config,
+                                should_anonymize=frame_in_desired_interval,
                             )
 
-                    # Only process the current message if persons appear in the stream segment
-                    if len(current_headcount_segment["headcount"]) != 0:
-                        # Convert the ROS Image message to an OpenCV image
-                        cv_image = bridge.imgmsg_to_cv2(
-                            img_msg=deserialized_bytes,
-                            desired_encoding="bgr8",
-                        )
-
-                        # Process the image to keep track of the persons appearing and blur their faces
-                        processed_cv_image = analyze_and_anonymize_frame(
-                            frame=cv_image,
-                            headcount_segment=current_headcount_segment,
-                            tracked_persons=tracked_persons,
-                            config=config,
-                            should_anonymize=must_write_frame,
-                        )
-
-                if must_write_frame:
+                if frame_in_desired_interval:
 
                     if person_appearances is not None:
                         # Only process the current message if persons appear in the stream segment
                         if len(current_headcount_segment["headcount"]) != 0:
                             # Convert the OpenCV image back to a ROS Image message
-                            processed_ros_image = bridge.cv2_to_imgmsg(
-                                cvim=processed_cv_image,
-                                encoding="rgb8",
-                            )
+                            processed_ros_image = bridge.cv2_to_imgmsg(cvim=processed_cv_image, encoding="rgb8")
 
                             # Restore message header. Skip restoring frame_id to prevent issues with newer SDK versions
                             processed_ros_image.header.seq = frame_number
@@ -1082,17 +1104,16 @@ def process_bag_file(
                             output_bag_clip=desired_interval_index,
                             output_directory_path=output_directory_path,
                         )
-                        print(f"Created bag file: {current_output_bag_path.name}")
+                        print(f"\tCreated output bag file: {current_output_bag_path.name}")
 
                         # Write the RealSense config messages to the output bag clip
                         for rs_topic, rs_msg, rs_t in input_bag.read_messages(
-                            end_time=BAG_INITIALIZATION_TIME, raw=True
+                            end_time=BAG_INITIALIZATION_TIME,
+                            raw=True,
                         ):
-                            output_bag.write(
-                                topic=rs_topic, msg=rs_msg, t=rs_t, raw=True
-                            )
+                            output_bag.write(topic=rs_topic, msg=rs_msg, t=rs_t, raw=True)
 
-                print(f"\rCurrent color frame: {frame_number}", end="", flush=True)
+                print(f"\r\t{frame_action} color frame: {frame_number}", end="", flush=True)
 
             # If a clip is being written
             if writing_desired_frames:
@@ -1109,38 +1130,32 @@ def process_bag_file(
                 )
 
                 if frame_number == current_desired_interval["end_frame"]:
+                    # Close the current output bag clip
+                    output_bag.close()
+                    print(f"\n\tOutput bag file closed successfully.")
+
+                    # If all the desired intervals were written the task is finished
+                    if desired_interval_index == len(desired_intervals) - 1:
+                        break
 
                     # Update the flag to disable the writing
                     writing_desired_frames = False
 
-                    # Close the current output bag clip
-                    close_bag(bag=output_bag, bag_path=current_output_bag_path)
-
-                    # If all the desired intervals were written the task is finished
-                    if desired_interval_index == len(desired_intervals) - 1:
-                        bag_processing_finished = True
-
                     # Reset for the next clip
                     clip_start_time = None
 
-        # If clip was being written after all the input_bag's messages were read
-        if writing_desired_frames:
-            # Close the current output bag clip
-            close_bag(bag=output_bag, bag_path=current_output_bag_path)
     else:
-        print("No desired frame intervals were found")
+        print("No desired color frame intervals were found")
 
     # Close the input bag file
     input_bag.close()
-    print(f"\nProcessing of the file '{input_bag_path.name}' has finished.")
+    print(f"\nFinished processing the file: {input_bag_path.name}")
     # Calculate and display the duration of the process
     bag_processing_duration = (time.time() - bag_processing_start_time) / 60
-    print(f"\nProcessing time: {format(round(bag_processing_duration, 3))} minutes")
-    print("\n------------------------------------------------------------")
+    print(f"\nElapsed time: {format(round(bag_processing_duration, 2))} minutes")
 
 
 def main():
-
     # Initialize the Tkinter main window and hide it
     main_window = tkinter.Tk()
     main_window.withdraw()
@@ -1165,25 +1180,33 @@ def main():
         print("\nError: The dataset folder was not selected.")
 
         # Exit the program
-        print(f"\nExiting the program.")
+        print(f"\nExiting the program...")
         sys.exit()
     else:
         print(f"\nSelected dataset folder: {dataset_path}")
-        print("\n------------------------------------------------------------")
 
-    # Create the 'edits' folder if it doesn't exist
-    output_directory_path = dataset_path / "edits"
+    # Create the output folder if it doesn't exist
+    output_directory_name = f"{datetime.now().strftime('%Y-%m-%d_%H.%M.%S')}"
+    output_directory_path = dataset_path / config["OUTPUT_FOLDER_NAME"] / output_directory_name
     if not output_directory_path.exists():
         output_directory_path.mkdir(parents=True)
+        print(
+            f"\nCreated folder to save the output bag files: ./{config['OUTPUT_FOLDER_NAME']}/{output_directory_name}"
+        )
+
+    if dataset_path is not None:
+        print("\n------------------------------------------------------------")
 
     # List all .bag files in the directory
-    bag_file_paths = [
-        bag_file_path
-        for bag_file_path in dataset_path.glob("*.bag")
-        if bag_file_path.is_file()
-    ]
-
+    bag_file_paths = [bag_file_path for bag_file_path in dataset_path.glob("*.bag") if bag_file_path.is_file()]
     total_bag_files = len(bag_file_paths)
+
+    if total_bag_files == 0:
+        print("\nError: No bag files were found in the dataset folder.")
+
+        # Exit the program
+        print(f"\nExiting the program...")
+        sys.exit()
 
     # Temporary benchmark for performance measurement
     dataset_processing_start_time = time.time()
@@ -1193,26 +1216,24 @@ def main():
         bag_file_name = bag_file_path.name
 
         if total_bag_files > 1:
-            print(f"\nProcessing file {file_index}/{total_bag_files}: '{bag_file_name}'")
+            print(f"\nStarting to process file {file_index}/{total_bag_files}: {bag_file_name}")
         else:
-            print(f"\nProcessing of the file '{bag_file_name}' has started.")
+            print(f"\nStarting to process the file: {bag_file_name}")
 
-        bag_metadata = dataset_metadata[
-            dataset_metadata["bag_filename"] == bag_file_name
-        ]
+        bag_metadata = dataset_metadata[dataset_metadata["bag_filename"] == bag_file_name]
 
-        process_bag_file(
+        process_bag(
             config=config,
             input_bag_path=bag_file_path,
             input_bag_metadata=bag_metadata,
             output_directory_path=output_directory_path,
         )
+        print("\n------------------------------------------------------------")
 
-    # Calculate and display the duration of the process
-    dataset_processing_duration = (time.time() - dataset_processing_start_time) / 60
-    print(
-        f"\nTotal processing time: {round(dataset_processing_duration, 3)} minutes"
-    )
+    if total_bag_files > 1:
+        # Calculate and display the duration of the process
+        dataset_processing_duration = (time.time() - dataset_processing_start_time) / 60
+        print(f"\nTotal processing time: {round(dataset_processing_duration, 2)} minutes")
 
 
 if __name__ == "__main__":
