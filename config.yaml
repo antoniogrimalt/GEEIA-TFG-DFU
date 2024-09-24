@@ -4,7 +4,7 @@ OUTPUT_FOLDER_NAME: "edits"
 # Wound Visibility Settings
 KEEP_WOUND_FULLY_OUT: false  # If set to 'false', frames where the wound is fully out of the frame will be discarded. (boolean)
 KEEP_WOUND_PARTIALLY_OUT: true  # If set to 'false', frames with partial visibility will be discarded. (boolean)
-PARTIALLY_OUT_TOLERANCE: 2  # Tolerance level for partially visible wounds. Higher values allow more leniency in how much of the wound can be out of view (1: LIGHTLY, 2: MODERATELY, 3: HEAVILY). (integer from 1 to 3)
+PARTIALLY_OUT_TOLERANCE: 1  # Tolerance level for partially visible wounds. Higher values allow more leniency in how much of the wound can be out of view (1: LIGHTLY, 2: MODERATELY, 3: HEAVILY). (integer from 1 to 3)
 KEEP_WOUND_BLURRY: false  # If set to 'false', frames where the wound appears blurry will be discarded. (boolean)
 KEEP_WOUND_COVERED: false  # If set to 'false', frames where the wound is covered by objects or bandages will be discarded. (boolean)
 KEEP_WOUND_NEAR_FACE: false  # If set to 'false', frames where the wound is near the face will be discarded. (boolean)
@@ -17,12 +17,12 @@ MANUAL_AREA_PADDING: 30  # Padding (in pixels) applied around manually defined f
 
 # Face Detection Settings
 CHECK_ALL_FLIPS: true  # Whether to check all flips (horizontal, vertical, both) for face detection. Use 'false' to skip checking flips unless faces aren't detected in the original frame. (boolean)
-FACE_DETECTION_THRESHOLD: 0.1  # Minimum confidence score for face detection. Only faces with a confidence score higher than this value will be processed. (float between 0.0 and 1.0)
+FACE_DETECTION_THRESHOLD: 0.01  # Minimum confidence score for face detection. Only faces with a confidence score higher than this value will be processed. (float between 0.0 and 1.0)
 IGNORE_STAFF: false  # Whether to ignore detection of staff members. If set to 'true', staff faces will not be detected or anonymized. (boolean)
 
 # Face Matching Settings
-MIN_FACIAL_AREA_IOU: 0.7  # Minimum Intersection Over Union (IoU) threshold for comparing detected and known face bounding boxes. Higher values increase the strictness of bounding box matching. (float between 0.0 and 1.0)
-MAX_LANDMARK_DISTANCE: 50  # Maximum allowable distance (in pixels) between detected and known facial landmarks for a match to be considered valid. Smaller values mean stricter matching. (integer greater than 0)
+MIN_FACIAL_AREA_IOU: 0.3  # Minimum Intersection Over Union (IoU) threshold for comparing detected and known face bounding boxes. Higher values increase the strictness of bounding box matching. (float between 0.0 and 1.0)
+MAX_LANDMARK_DISTANCE: 40  # Maximum allowable distance (in pixels) between detected and known facial landmarks for a match to be considered valid. Smaller values mean stricter matching. (integer greater than 0)
 
 # Face Reuse Settings
 LIMIT_FACE_REUSE: false  # Whether to limit the reuse of previously detected faces when faces aren't detected in a frame. (boolean)

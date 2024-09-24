@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import filedialog
 from typing import Tuple, List, Dict, Optional
 import cv2
+import math
 import numpy as np
 import pandas as pd
 from pandas import DataFrame
@@ -207,6 +208,77 @@ def calculate_avg_landmark_distance(
     return total_distance / valid_landmark_count if valid_landmark_count > 0 else None
 
 
+def approximate_facial_area(landmarks: dict, boundary_height: int, boundary_width: int, config: dict) -> List[int]:
+
+    x1, y1, x2, y2 = None, None, None, None
+
+    for landmark in landmarks.values():
+        x, y = landmark
+        if (x1 is None) or (x < x1):
+            x1 = x
+        if (y1 is None) or (y < y1):
+            y1 = y
+        if (x2 is None) or (x > x2):
+            x2 = x
+        if (y2 is None) or (y > y2):
+            y2 = y
+
+    # Apply the padding without exceeding the frame boundary
+    x1 = max(x1 - config["MANUAL_AREA_PADDING"], 0)
+    y1 = max(y1 - config["MANUAL_AREA_PADDING"], 0)
+    x2 = min(x2 + config["MANUAL_AREA_PADDING"], boundary_width)
+    y2 = min(y2 + config["MANUAL_AREA_PADDING"], boundary_height)
+
+    return [x1, y1, x2, y2]
+
+
+def calculate_face_orientation(landmarks: dict) -> str:
+    # Calculate the center of the eyes
+    eye_center = (
+        (landmarks["left_eye"][0] + landmarks["right_eye"][0]) / 2.0,
+        (landmarks["left_eye"][1] + landmarks["right_eye"][1]) / 2.0,
+    )
+    # Calculate the center of the mouth
+    mouth_center = (
+        (landmarks["mouth_left"][0] + landmarks["mouth_right"][0]) / 2.0,
+        (landmarks["mouth_left"][1] + landmarks["mouth_right"][1]) / 2.0,
+    )
+    # Calculate the differences in X and Y
+    delta_x = mouth_center[0] - eye_center[0]
+    delta_y = mouth_center[1] - eye_center[1]
+    # Calculate the angle in degrees
+    angle = math.degrees(math.atan2(delta_y, delta_x))
+    # Normalize the angle between 0 and 360 degrees
+    angle = (angle + 360) % 360
+    # Determine the orientation based on the angle
+    if 45 <= angle < 135:
+        orientation = "TB"  # Eyes top, mouth bottom
+    elif 225 <= angle < 315:
+        orientation = "BT"  # Eyes bottom, mouth top
+    elif 135 <= angle < 225:
+        orientation = "RL"  # Eyes right, mouth left
+    else:
+        orientation = "LR"  # Eyes left, mouth right
+
+    return orientation
+
+
+def is_orientation_change_acceptable(previous_orientation: str, current_orientation: str) -> bool:
+
+    opposite_orientation = {
+        "TB": "BT",
+        "BT": "TB",
+        "LR": "RL",
+        "RL": "LR",
+    }
+
+    # Check if the current orientation is the opposite of the previous one
+    if current_orientation == opposite_orientation.get(previous_orientation):
+        return False
+    else:
+        return True
+
+
 def flip_face_coordinates(boundary_height: int, boundary_width: int, detected_face: dict, flip_code: int) -> dict:
 
     facial_area = detected_face["facial_area"]
@@ -266,6 +338,7 @@ def flip_face_coordinates(boundary_height: int, boundary_width: int, detected_fa
 
 
 def analyze_and_anonymize_frame(
+    frame_number: int,
     frame: np.ndarray,
     headcount_segment: dict,
     tracked_persons: List[dict],
@@ -342,73 +415,96 @@ def analyze_and_anonymize_frame(
 
     # If faces were detected
     if len(detected_faces) > 0:
-
+        print(f"\n\t\tFrame: {frame_number}")
         # Iterate over a snapshot of the detected_faces's items
         for face_id, detected_face in list(detected_faces.items()):
+
+            print(f"\t\t- Detected: {detected_face}")
+
             matched_person_id = None
             matched_person_type = None
             max_facial_area_iou = 0.0
             min_landmark_distance = float("inf")
 
+            detected_face_orientation = calculate_face_orientation(detected_face["landmarks"])
+
             for person in tracked_persons:
 
-                # Skip if this person's id is already assigned
-                if person["id"] in assigned_person_ids:
+                # Skip if this person's id is already assigned or the detected face is in a different orientation
+                if (person["id"] in assigned_person_ids) or (
+                    not is_orientation_change_acceptable(
+                        previous_orientation=person["orientation"],
+                        current_orientation=detected_face_orientation,
+                    )
+                ):
                     continue
 
-                # If this person's face data was manually defined and hasn't been used yet
-                if person["face_manually_defined"] and (person["face_reuse_count"] == -1):
+                # Discard the persons that are not present in the frame
+                if person["facial_area"] is not None:
 
-                    avg_landmark_distance = calculate_avg_landmark_distance(
-                        person_landmarks=person["landmarks"],
-                        detected_landmarks=detected_face["landmarks"],
-                    )
+                    print(f"\t\t\t- facial_area: {person['facial_area']}")
+                    print(f"\t\t\t- landmarks: {person['landmarks']}")
 
-                    if avg_landmark_distance is not None:
-                        if avg_landmark_distance < config["MAX_LANDMARK_DISTANCE"]:
-                            matched_person_id = person["id"]
-                            matched_person_type = person["type"]
-                            break
+                    # If the person's face data hasn't been reused
+                    if ((not person["face_manually_defined"]) and person["face_reuse_count"] == 0) or (
+                        person["face_manually_defined"] and person["face_reuse_count"] == -1
+                    ):
+                        #
+                        avg_landmark_distance = calculate_avg_landmark_distance(
+                            person_landmarks=person["landmarks"],
+                            detected_landmarks=detected_face["landmarks"],
+                        )
+                        print(f"\t\t\t\t· avg_landmark_distance: {avg_landmark_distance}")
+                        #
+                        if avg_landmark_distance is not None:
+                            if (
+                                avg_landmark_distance < config["MAX_LANDMARK_DISTANCE"]
+                                and avg_landmark_distance < min_landmark_distance
+                            ):
+                                min_landmark_distance = avg_landmark_distance
 
-                elif person["facial_area"] is not None:
-                    # Calculate IOU between the person's facial area and the detected facial area
-                    facial_area_iou = calculate_iou(box1=person["facial_area"], box2=detected_face["facial_area"])
+                                matched_person_id = person["id"]
+                                matched_person_type = person["type"]
 
-                    if facial_area_iou > max_facial_area_iou:
-                        max_facial_area_iou = facial_area_iou
-                        matched_person_id = person["id"]
-                        matched_person_type = person["type"]
+                    # If the person's face data is being reused
+                    else:
+                        # Expand the previous face data to increase the chances of overlap with the new area
+                        # x1, y1, x2, y2 = person["facial_area"]
+                        # person["facial_area"][0] = x1 - 15
+                        # person["facial_area"][1] = y1 - 15
+                        # person["facial_area"][2] = x2 + 15
+                        # person["facial_area"][3] = y2 + 15
 
-                        # Secondary check using landmarks to refine the match
-                        if matched_person_id is not None:
+                        # Calculate IOU between the person's previous facial area and the detected facial area
+                        facial_area_iou = calculate_iou(
+                            box1=person["facial_area"],
+                            box2=detected_face["facial_area"],
+                        )
+                        print(f"\t\t\t\t· facial_area_iou: {facial_area_iou}")
+                        #
+                        if facial_area_iou != 0:
+                            if (facial_area_iou > config["MIN_FACIAL_AREA_IOU"]) and (
+                                facial_area_iou > max_facial_area_iou
+                            ):
+                                max_facial_area_iou = facial_area_iou
 
-                            avg_landmark_distance = calculate_avg_landmark_distance(
-                                person_landmarks=person["landmarks"],
-                                detected_landmarks=detected_face["landmarks"],
-                            )
-
-                            if avg_landmark_distance is not None:
-                                if (
-                                    avg_landmark_distance < config["MAX_LANDMARK_DISTANCE"]
-                                    and avg_landmark_distance < min_landmark_distance
-                                ):
-                                    min_landmark_distance = avg_landmark_distance
-                                else:
-                                    matched_person_id = None
-                                    matched_person_type = None
+                                matched_person_id = person["id"]
+                                matched_person_type = person["type"]
 
             if matched_person_id is not None:
-
                 # Save the person's tracking info in the face dict
+                detected_face["orientation"] = detected_face_orientation
                 detected_face["area_origin"] = "AUTO"
                 detected_face["area_reuse_count"] = 0
                 detected_face["person_id"] = matched_person_id
                 detected_face["person_type"] = matched_person_type
+                print(f"\t\t- Matched: {detected_face}")
 
                 # Add the matched person's id to the assigned set
                 assigned_person_ids.add(matched_person_id)
             else:
                 # Remove the detected face if no good person match is found
+                print(f"\t\t- Removed: {detected_face}")
                 del detected_faces[face_id]
 
         # If not all detected faces were deleted
@@ -440,6 +536,7 @@ def analyze_and_anonymize_frame(
                         "score": 1.0,
                         "facial_area": tracked_persons[person_id]["facial_area"],
                         "landmarks": tracked_persons[person_id]["landmarks"],
+                        "orientation": tracked_persons[person_id]["orientation"],
                         "area_origin": ("MANUAL" if tracked_persons[person_id]["face_manually_defined"] else "AUTO"),
                         "area_reuse_count": tracked_persons[person_id]["face_reuse_count"],
                         "person_id": person_id,
@@ -552,6 +649,7 @@ def initialize_tracked_persons(
                     "mouth_right": None,
                     "mouth_left": None,
                 },
+                "orientation": None,
                 "face_manually_defined": False,
                 "face_reuse_count": 0,
             }
@@ -562,6 +660,8 @@ def update_tracked_persons(
     tracked_persons: List[dict],
     headcount_change: dict = None,
     detected_faces: dict = None,
+    boundary_height: int = None,
+    boundary_width: int = None,
     config: dict = None,
 ) -> None:
     # If the face data of entering or leaving persons has to be updated
@@ -576,14 +676,18 @@ def update_tracked_persons(
             # Create an approximation of the facial area and add it to the person's data
             tracked_persons[person_id]["facial_area"] = approximate_facial_area(
                 landmarks=manual_landmarks,
+                boundary_height=boundary_height,
+                boundary_width=boundary_width,
                 config=config,
             )
-            # Add the manually obtained landmarks to the person's data
+            # Copy the manually defined landmarks
             for landmark, coordinates in manual_landmarks.items():
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
+            # Copy the manually defined face orientation
+            tracked_persons[person_id]["orientation"] = headcount_change["person"]["orientation"]
             # Mark the face data as user defined
             tracked_persons[person_id]["face_manually_defined"] = True
-            # Initialize the number of uses
+            # The manually defined face hasn't been used yet, Set the reuse count to -1 to compensate the next usage
             tracked_persons[person_id]["face_reuse_count"] = -1
 
         # If the person left the scene
@@ -594,6 +698,8 @@ def update_tracked_persons(
             old_landmarks = tracked_persons[person_id]["landmarks"]
             for landmark, coordinates in old_landmarks.items():
                 tracked_persons[person_id]["landmarks"][landmark] = None
+            # Reset face orientation
+            tracked_persons[person_id]["orientation"] = None
             # Reset the face origin
             tracked_persons[person_id]["face_manually_defined"] = False
             # Reset the face reuse count
@@ -608,35 +714,12 @@ def update_tracked_persons(
             tracked_persons[person_id]["facial_area"] = detected_face["facial_area"]
             for landmark, coordinates in detected_face["landmarks"].items():
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
-            # Mark the face data as detected by the model
+            # Update the face orientation
+            tracked_persons[person_id]["orientation"] = detected_face["orientation"]
+            # Update the face origin
             tracked_persons[person_id]["face_manually_defined"] = False
             # Reset the reuse count
             tracked_persons[person_id]["face_reuse_count"] = 0
-
-
-def approximate_facial_area(landmarks: dict, config: dict) -> List[int]:
-    # Initialize min and max values to None
-    x_min, y_min, x_max, y_max = None, None, None, None
-
-    # Iterate through the landmarks and update min and max values
-    for landmark in landmarks.values():
-        x, y = landmark
-        if (x_min is None) or (x < x_min):
-            x_min = x
-        if (y_min is None) or (y < y_min):
-            y_min = y
-        if (x_max is None) or (x > x_max):
-            x_max = x
-        if (y_max is None) or (y > y_max):
-            y_max = y
-
-    # Apply the margin to the calculated bounding box
-    x_min -= config["MANUAL_AREA_PADDING"]
-    y_min -= config["MANUAL_AREA_PADDING"]
-    x_max += config["MANUAL_AREA_PADDING"]
-    y_max += config["MANUAL_AREA_PADDING"]
-
-    return [x_min, y_min, x_max, y_max]
 
 
 def load_config_file(filename: str) -> dict:
@@ -752,7 +835,7 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
             break
 
     # Retrieve the color stream's resolution, encoding, FPS, and the first and last frame numbers with their timestamps
-    color_stream_resolution = None
+    color_stream_height, color_stream_width = None, None
     color_stream_encoding = None
     color_stream_fps = None
     first_frame_number = None
@@ -767,7 +850,8 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
             if first_frame_number is None:
                 first_frame_number = msg.header.seq
                 first_frame_timestamp = msg.header.stamp
-                color_stream_resolution = f"{msg.width}x{msg.height}"
+                color_stream_height = msg.height
+                color_stream_width = msg.width
             last_frame_number = msg.header.seq
             last_frame_timestamp = msg.header.stamp
 
@@ -779,7 +863,7 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
     print(f"Color stream info:")
     # print(f"\t- Data topic: {color_data_topic}")
     # print(f"\t- Info topic: {color_info_topic}")
-    print(f"\t- Resolution: {color_stream_resolution}")
+    print(f"\t- Resolution: {color_stream_width}x{color_stream_height}")
     print(f"\t- Encoding: {color_stream_encoding.upper()}")
     print(f"\t- FPS: {color_stream_fps}")
     print(f"\t- Duration: {round(color_stream_duration, 2)} seconds")
@@ -855,6 +939,7 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
                             "person": {
                                 "id": index,
                                 "landmarks": appearance["start"]["landmarks"],
+                                "orientation": appearance["start"]["orientation"],
                             },
                         }
                     )
@@ -1050,6 +1135,8 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
                                 update_tracked_persons(
                                     tracked_persons=tracked_persons,
                                     headcount_change=headcount_change,
+                                    boundary_height=(color_stream_height - 1),
+                                    boundary_width=(color_stream_width - 1),
                                     config=config,
                                 )
 
@@ -1060,6 +1147,7 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
 
                             # Process the image to keep track of the persons appearing and blur their faces
                             processed_cv_image = analyze_and_anonymize_frame(
+                                frame_number=frame_number,
                                 frame=cv_image,
                                 headcount_segment=current_headcount_segment,
                                 tracked_persons=tracked_persons,
