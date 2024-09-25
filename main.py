@@ -419,11 +419,11 @@ def analyze_and_anonymize_frame(
 
     # If faces were detected
     if len(detected_faces) > 0:
-        print(f"\n\t\tFrame: {frame_number}")
+        # print(f"\n\t\tFrame: {frame_number}")
         # Iterate over a snapshot of the detected_faces's items
         for face_id, detected_face in list(detected_faces.items()):
 
-            print(f"\t\t- Detected: {detected_face}")
+            # print(f"\t\t- Detected: {detected_face}")
 
             matched_person_id = None
             matched_person_type = None
@@ -446,8 +446,8 @@ def analyze_and_anonymize_frame(
                 # Discard the persons that are not present in the frame
                 if person["facial_area"] is not None:
 
-                    print(f"\t\t\t- facial_area: {person['facial_area']}")
-                    print(f"\t\t\t- landmarks: {person['landmarks']}")
+                    # print(f"\t\t\t- facial_area: {person['facial_area']}")
+                    # print(f"\t\t\t- landmarks: {person['landmarks']}")
 
                     # If the person's face data hasn't been reused
                     if ((not person["face_manually_defined"]) and person["face_reuse_count"] == 0) or (
@@ -458,7 +458,7 @@ def analyze_and_anonymize_frame(
                             person_landmarks=person["landmarks"],
                             detected_landmarks=detected_face["landmarks"],
                         )
-                        print(f"\t\t\t\t· avg_landmark_distance: {avg_landmark_distance}")
+                        # print(f"\t\t\t\t· avg_landmark_distance: {avg_landmark_distance}")
                         #
                         if avg_landmark_distance is not None:
                             if (
@@ -472,19 +472,12 @@ def analyze_and_anonymize_frame(
 
                     # If the person's face data is being reused
                     else:
-                        # Expand the previous face data to increase the chances of overlap with the new area
-                        # x1, y1, x2, y2 = person["facial_area"]
-                        # person["facial_area"][0] = x1 - 15
-                        # person["facial_area"][1] = y1 - 15
-                        # person["facial_area"][2] = x2 + 15
-                        # person["facial_area"][3] = y2 + 15
-
                         # Calculate IOU between the person's previous facial area and the detected facial area
                         facial_area_iou = calculate_iou(
                             box1=person["facial_area"],
                             box2=detected_face["facial_area"],
                         )
-                        print(f"\t\t\t\t· facial_area_iou: {facial_area_iou}")
+                        # print(f"\t\t\t\t· facial_area_iou: {facial_area_iou}")
                         #
                         if facial_area_iou != 0:
                             if (facial_area_iou > config["MIN_FACIAL_AREA_IOU"]) and (
@@ -502,13 +495,13 @@ def analyze_and_anonymize_frame(
                 detected_face["area_reuse_count"] = 0
                 detected_face["person_id"] = matched_person_id
                 detected_face["person_type"] = matched_person_type
-                print(f"\t\t- Matched: {detected_face}")
+                # print(f"\t\t- Matched: {detected_face}")
 
                 # Add the matched person's id to the assigned set
                 assigned_person_ids.add(matched_person_id)
             else:
                 # Remove the detected face if no good person match is found
-                print(f"\t\t- Removed: {detected_face}")
+                # print(f"\t\t- Removed: {detected_face}")
                 del detected_faces[face_id]
 
         # If not all detected faces were deleted
@@ -879,11 +872,20 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
     min_output_bag_frames = color_stream_fps * config["MIN_OUTPUT_DURATION"]
 
     # Get the intervals to discard
+    print("\nCalculating undesired color frame intervals...")
     undesired_intervals = get_undesired_intervals(
         bag_metadata=input_bag_metadata,
         config=config,
         min_output_bag_frames=min_output_bag_frames,
     )
+    if len(undesired_intervals) > 0:
+        # Combine the undesired intervals to merge any overlapping or adjacent intervals
+        undesired_intervals = combine_intervals(undesired_intervals)
+        print("Undesired color frame intervals:")
+        for interval in undesired_intervals:
+            print(f"\t- {interval}")
+    else:
+        print("No undesired color frame intervals were found")
 
     # Calculate desired intervals and get discarded intervals
     desired_intervals, discarded_intervals = get_desired_intervals(
@@ -893,18 +895,17 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
         min_output_bag_frames=min_output_bag_frames,
     )
 
-    # Add the discarded intervals back to undesired_intervals
-    undesired_intervals += discarded_intervals
+    if len(discarded_intervals) > 0:
+        # Add the discarded intervals back to undesired_intervals
+        print("\nCombining undesired intervals with discarded ones...")
+        undesired_intervals += discarded_intervals
 
-    print("\nCalculating undesired color frame intervals...")
-    if len(undesired_intervals) > 0:
+    if (len(undesired_intervals) > 0) and (len(discarded_intervals) > 0):
         # Combine the undesired intervals to merge any overlapping or adjacent intervals
         undesired_intervals = combine_intervals(undesired_intervals)
-        print("Undesired color frame intervals:")
+        print("Updated undesired color frame intervals:")
         for interval in undesired_intervals:
             print(f"\t- {interval}")
-    else:
-        print("No undesired color frame intervals were found")
 
     print("\nCalculating desired color frame intervals...")
     if len(desired_intervals) > 0:
