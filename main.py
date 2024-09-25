@@ -27,6 +27,27 @@ BAG_INITIALIZATION_TIME = Time(nsecs=1)  # Publish time of RealSense metadata
 BAG_SENSORS_START_TIME = Time(nsecs=20000)  # Publish start time of sensors
 
 
+def combine_intervals(intervals: List[dict]) -> List[dict]:
+    if not intervals:
+        return []
+
+    # Sort intervals by start_frame
+    intervals.sort(key=lambda x: x["start_frame"])
+
+    combined_intervals = [intervals[0]]
+
+    for current_interval in intervals[1:]:
+        last_interval = combined_intervals[-1]
+
+        # If the current interval overlaps or is adjacent to the last one, merge them
+        if current_interval["start_frame"] <= last_interval["end_frame"] + 1:
+            last_interval["end_frame"] = max(last_interval["end_frame"], current_interval["end_frame"])
+        else:
+            combined_intervals.append(current_interval)
+
+    return combined_intervals
+
+
 def get_undesired_intervals(bag_metadata: pd.DataFrame, config: dict, min_output_bag_frames: float) -> List[dict]:
     undesired_intervals = []
 
@@ -66,30 +87,7 @@ def get_undesired_intervals(bag_metadata: pd.DataFrame, config: dict, min_output
     if (not config["KEEP_WOUND_NEAR_FACE"]) and (not pd.isna(wound_near_face)):
         undesired_intervals += json.loads(wound_near_face)
 
-    if not undesired_intervals:
-        return []
-
-    # Combine overlapping or adjacent intervals
-    # . Sort intervals by start_frame
-    undesired_intervals.sort(key=lambda x: x["start_frame"])
-
-    combined_intervals = [undesired_intervals[0]]
-
-    for current_interval in undesired_intervals[1:]:
-        last_interval = combined_intervals[-1]
-
-        # Calculate the number of desired frames between the current and the last undesired interval
-        frames_in_gap = current_interval["start_frame"] - last_interval["end_frame"] - 1
-
-        # If the current interval overlaps or is adjacent to the last one, merge them
-        if (current_interval["start_frame"] <= last_interval["end_frame"] + 1) or (
-            frames_in_gap < min_output_bag_frames
-        ):
-            last_interval["end_frame"] = max(last_interval["end_frame"], current_interval["end_frame"])
-        else:
-            combined_intervals.append(current_interval)
-
-    return combined_intervals
+    return undesired_intervals
 
 
 def get_desired_intervals(
@@ -97,7 +95,7 @@ def get_desired_intervals(
     first_frame_number: int,
     last_frame_number: int,
     min_output_bag_frames: float,
-) -> List[dict]:
+) -> Tuple[List[dict], List[dict]]:
     desired_intervals = []
 
     # Initialize the start frame for the first desired interval
@@ -124,12 +122,18 @@ def get_desired_intervals(
             }
         )
 
-    # Filter out desired intervals that are shorter than the minimum duration
-    return [
-        interval
-        for interval in desired_intervals
-        if (interval["end_frame"] - interval["start_frame"] + 1) >= min_output_bag_frames
-    ]
+    # Now, filter out desired intervals that are shorter than the minimum duration
+    filtered_desired_intervals = []
+    discarded_intervals = []
+
+    for interval in desired_intervals:
+        duration = interval["end_frame"] - interval["start_frame"] + 1
+        if duration >= min_output_bag_frames:
+            filtered_desired_intervals.append(interval)
+        else:
+            discarded_intervals.append(interval)
+
+    return filtered_desired_intervals, discarded_intervals
 
 
 def is_frame_in_interval(frame: int, interval: dict) -> bool:
@@ -874,14 +878,28 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
     # Minimum number of frames in an output bag
     min_output_bag_frames = color_stream_fps * config["MIN_OUTPUT_DURATION"]
 
-    print("\nCalculating undesired color frame intervals...")
     # Get the intervals to discard
     undesired_intervals = get_undesired_intervals(
         bag_metadata=input_bag_metadata,
         config=config,
         min_output_bag_frames=min_output_bag_frames,
     )
+
+    # Calculate desired intervals and get discarded intervals
+    desired_intervals, discarded_intervals = get_desired_intervals(
+        undesired_intervals=undesired_intervals,
+        first_frame_number=first_frame_number,
+        last_frame_number=last_frame_number,
+        min_output_bag_frames=min_output_bag_frames,
+    )
+
+    # Add the discarded intervals back to undesired_intervals
+    undesired_intervals += discarded_intervals
+
+    print("\nCalculating undesired color frame intervals...")
     if len(undesired_intervals) > 0:
+        # Combine the undesired intervals to merge any overlapping or adjacent intervals
+        undesired_intervals = combine_intervals(undesired_intervals)
         print("Undesired color frame intervals:")
         for interval in undesired_intervals:
             print(f"\t- {interval}")
@@ -889,14 +907,6 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
         print("No undesired color frame intervals were found")
 
     print("\nCalculating desired color frame intervals...")
-    # Get the intervals to save
-    desired_intervals = get_desired_intervals(
-        undesired_intervals=undesired_intervals,
-        first_frame_number=first_frame_number,
-        last_frame_number=last_frame_number,
-        min_output_bag_frames=min_output_bag_frames,
-    )
-
     if len(desired_intervals) > 0:
         print("Desired color frame intervals:")
         for interval in desired_intervals:
