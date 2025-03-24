@@ -212,7 +212,9 @@ def calculate_avg_landmark_distance(
     return total_distance / valid_landmark_count if valid_landmark_count > 0 else None
 
 
-def approximate_facial_area(landmarks: dict, boundary_height: int, boundary_width: int, config: dict) -> List[int]:
+def calculate_approx_facial_area(
+    landmarks: dict, boundary_height: int, boundary_width: int, config: dict
+) -> List[int]:
 
     x1, y1, x2, y2 = None, None, None, None
 
@@ -655,23 +657,23 @@ def initialize_tracked_persons(
 
 def update_tracked_persons(
     tracked_persons: List[dict],
-    headcount_change: dict = None,
+    appearance_event: dict = None,
     detected_faces: dict = None,
     boundary_height: int = None,
     boundary_width: int = None,
     config: dict = None,
 ) -> None:
     # If the face data of entering or leaving persons has to be updated
-    if headcount_change is not None:
-        # Identifier of the person involved in the headcount change
-        person_id = headcount_change["person"]["id"]
+    if appearance_event is not None:
+        # Identifier of the person involved in the appearance event
+        person_id = appearance_event["person"]["id"]
 
-        # If the person entered the scene
-        if headcount_change["type"] == "enters":
+        # If the person entered the scene or a waypoint was set for them
+        if (appearance_event["type"] == "enters") or (appearance_event["type"] == "stays"):
             # Person's facial landmarks that were manually obtained
-            manual_landmarks = headcount_change["person"]["landmarks"]
+            manual_landmarks = appearance_event["person"]["landmarks"]
             # Create an approximation of the facial area and add it to the person's data
-            tracked_persons[person_id]["facial_area"] = approximate_facial_area(
+            tracked_persons[person_id]["facial_area"] = calculate_approx_facial_area(
                 landmarks=manual_landmarks,
                 boundary_height=boundary_height,
                 boundary_width=boundary_width,
@@ -681,14 +683,14 @@ def update_tracked_persons(
             for landmark, coordinates in manual_landmarks.items():
                 tracked_persons[person_id]["landmarks"][landmark] = coordinates
             # Copy the manually defined face orientation
-            tracked_persons[person_id]["orientation"] = headcount_change["person"]["orientation"]
+            tracked_persons[person_id]["orientation"] = appearance_event["person"]["orientation"]
             # Mark the face data as user defined
             tracked_persons[person_id]["face_manually_defined"] = True
             # The manually defined face hasn't been used yet, Set the reuse count to -1 to compensate the next usage
             tracked_persons[person_id]["face_reuse_count"] = -1
 
         # If the person left the scene
-        elif headcount_change["type"] == "leaves":
+        elif appearance_event["type"] == "leaves":
             # Reset the facial_area
             tracked_persons[person_id]["facial_area"] = None
             # Reset the face landmarks
@@ -918,7 +920,7 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
 
         # Initialize data structures for color stream processing
         tracked_persons = []  # Updated data of the persons appearing
-        headcount_changes = []  # List of the headcount changes during the stream
+        appearance_events = []  # List of the appearance events during the stream
         headcount_segments = []  # Stream segmented by headcount changes
         # Process person appearances if available
         person_appearances_cell = input_bag_metadata["person_appearances"].values[0]
@@ -935,15 +937,15 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
                 ignore_staff=config["IGNORE_STAFF"],
             )
 
-            # Populate the headcount changes list
+            # Populate the appearance events list
             for index, person in enumerate(person_appearances):
                 # Skip considering the appearances of the hospital staff if requested
                 if config["IGNORE_STAFF"] and person["type"] == "STAFF":
                     continue
 
-                # Add a headcount change for each endpoint of the frame interval
+                # Add an appearance event for each endpoint of the frame interval
                 for appearance in person["appearances"]:
-                    headcount_changes.append(
+                    appearance_events.append(
                         {
                             "frame": appearance["start"]["frame"],
                             "type": "enters",
@@ -954,7 +956,22 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
                             },
                         }
                     )
-                    headcount_changes.append(
+
+                    if "waypoints" in appearance:
+                        for waypoint in appearance["waypoints"]:
+                            appearance_events.append(
+                                {
+                                    "frame": waypoint["frame"],
+                                    "type": "stays",
+                                    "person": {
+                                        "id": index,
+                                        "landmarks": waypoint["landmarks"],
+                                        "orientation": waypoint["orientation"],
+                                    },
+                                }
+                            )
+
+                    appearance_events.append(
                         {
                             "frame": appearance["end"]["frame"] + 1,
                             "type": "leaves",
@@ -964,29 +981,29 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
                         }
                     )
 
-            # Sort the headcount changes by frame number
-            headcount_changes.sort(key=lambda endpoint: endpoint["frame"])
+            # Sort the appearance events by frame number
+            appearance_events.sort(key=lambda endpoint: endpoint["frame"])
 
             # Define the segments of the color stream
             # Initialize variables
             current_frame_number = first_frame_number
             current_headcount = set()  # Indexes of the persons in the current segment
 
-            # Process the headcount changes to segment the color stream
-            for headcount_change in headcount_changes:
-                if current_frame_number < headcount_change["frame"]:
+            # Process the appearance events to segment the color stream
+            for appearance_event in appearance_events:
+                if current_frame_number < appearance_event["frame"]:
                     headcount_segments.append(
                         {
                             "start_frame": current_frame_number,
-                            "end_frame": headcount_change["frame"] - 1,
+                            "end_frame": appearance_event["frame"] - 1,
                             "headcount": sorted(current_headcount),
                         }
                     )
-                    current_frame_number = headcount_change["frame"]
-                if headcount_change["type"] == "enters":
-                    current_headcount.add(headcount_change["person"]["id"])
-                elif headcount_change["type"] == "leaves":
-                    current_headcount.remove(headcount_change["person"]["id"])
+                    current_frame_number = appearance_event["frame"]
+                if appearance_event["type"] == "enters":
+                    current_headcount.add(appearance_event["person"]["id"])
+                elif appearance_event["type"] == "leaves":
+                    current_headcount.remove(appearance_event["person"]["id"])
 
             # Add the final segment if there are frames left
             if current_frame_number <= last_frame_number:
@@ -1139,13 +1156,13 @@ def process_bag(config: dict, input_bag_path: Path, input_bag_metadata: DataFram
                     if frame_in_desired_interval or (
                         not frame_in_desired_interval and undesired_interval_needs_tracking
                     ):
-                        # Check if the current frame has a headcount change to update the persons
-                        for headcount_change in headcount_changes:
-                            if frame_number == headcount_change["frame"]:
-                                # Insert or remove the facial data of the person involved in the headcount change
+                        # Check if the current frame has a appearance event to update the persons
+                        for appearance_event in appearance_events:
+                            if frame_number == appearance_event["frame"]:
+                                # Insert or remove the facial data of the person involved in the appearance event
                                 update_tracked_persons(
                                     tracked_persons=tracked_persons,
-                                    headcount_change=headcount_change,
+                                    appearance_event=appearance_event,
                                     boundary_height=(color_stream_height - 1),
                                     boundary_width=(color_stream_width - 1),
                                     config=config,
@@ -1290,7 +1307,7 @@ def main():
     if not output_directory_path.exists():
         output_directory_path.mkdir(parents=True)
         print(
-            f"\nCreated folder to save the output bag files: ./{config['OUTPUT_FOLDER_NAME']}/{output_directory_name}"
+            f"\nCreated folder to save the output bag files: .\\{config['OUTPUT_FOLDER_NAME']}\\{output_directory_name}"
         )
 
     if dataset_path is not None:
